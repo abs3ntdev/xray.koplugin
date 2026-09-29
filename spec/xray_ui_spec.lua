@@ -17,6 +17,38 @@ describe("xray_ui", function()
         _G.ui_tracker.closed = {}
     end)
 
+    describe("experimental subscription picker", function()
+        local old_auth
+        before_each(function()
+            old_auth = package.loaded["xray_openai_auth"]
+            package.loaded["xray_openai_auth"] = { getStatus = function() return { connected = false } end }
+        end)
+        after_each(function() package.loaded["xray_openai_auth"] = old_auth end)
+
+        it("lists account separately and blocks model selection until connected", function()
+            local chosen
+            plugin.ai_helper.setUnifiedModel = function(_, kind, provider, model)
+                chosen = { kind, provider, model }
+            end
+            plugin.showOpenAIAccount = function(self) self.account_opened = true end
+            local picker = plugin:getAIModelSelectionMenu("primary")
+            local subscription
+            for _, item in ipairs(picker) do
+                if item.text == "ChatGPT subscription (experimental)" then subscription = item end
+            end
+            assert.is_not_nil(subscription)
+            local model = subscription.sub_item_table_func()[1]
+            assert.truthy(model.text:find("gpt%-6%-luna"))
+            model.callback()
+            assert.is_nil(chosen)
+            assert.is_true(plugin.account_opened)
+            package.loaded["xray_openai_auth"].getStatus = function() return { connected = true } end
+            model.callback()
+            assert.are.same({ "primary", "openai_account", "gpt-6-luna" }, chosen)
+            assert.is_nil(plugin.ai_helper.settings.primary_ai)
+        end)
+    end)
+
     describe("showLanguageSelection", function()
         it("should show a Menu with language options and correctly marked default checkbox", function()
             plugin:showLanguageSelection()
@@ -2554,5 +2586,3 @@ describe("xray_ui", function()
         end)
     end)
 end)
-
-

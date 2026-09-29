@@ -85,7 +85,15 @@ local AIHelper = {
             api_key = nil,
             endpoint = "",
             model = nil,
-        }
+        },
+        -- Experimental ChatGPT subscription (OAuth device login). Never holds an
+        -- api_key; credentials live only in the dedicated xray_openai_auth store.
+        openai_account = {
+            name = "ChatGPT subscription (experimental)",
+            enabled = true,
+            oauth = true,
+            model = "gpt-6-luna",
+        },
     },
     default_provider = nil,
     current_language = "en",
@@ -250,6 +258,112 @@ function AIHelper:makeRequest(url, headers, request_body, timeout, maxtime)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- Experimental ChatGPT subscription provider (openai_account)
+-- ---------------------------------------------------------------------------
+local OPENAI_ACCOUNT = "openai_account"
+
+-- Lazy module accessors. Tests may inject self._openai_auth,
+-- self._secure_http and self._openai_responses. Nothing here touches the
+-- network or reads credentials at require time.
+function AIHelper:_getOpenAIAuth()
+    if self._openai_auth then return self._openai_auth end
+    local ok, mod = pcall(require, plugin_path .. "xray_openai_auth")
+    if ok and type(mod) == "table" then self._openai_auth = mod; return mod end
+    return nil
+end
+
+function AIHelper:_getSecureHTTP()
+    if self._secure_http then return self._secure_http end
+    local ok, mod = pcall(require, plugin_path .. "xray_secure_http")
+    if ok and type(mod) == "table" then self._secure_http = mod; return mod end
+    return nil
+end
+
+function AIHelper:_getOpenAIResponses()
+    if self._openai_responses then return self._openai_responses end
+    local ok, mod = pcall(require, plugin_path .. "xray_openai_responses")
+    if ok and type(mod) == "table" then self._openai_responses = mod; return mod end
+    return nil
+end
+
+-- Safe status for UI/gating. Never performs network I/O, never returns tokens.
+function AIHelper:getOpenAIAccountStatus()
+    local Auth = self:_getOpenAIAuth()
+    if not Auth or type(Auth.getStatus) ~= "function" then return { connected = false } end
+    local ok, status = pcall(Auth.getStatus, Auth)
+    if not ok or type(status) ~= "table" then return { connected = false } end
+    return { connected = status.connected == true, account_id = status.account_id, expires_at = status.expires_at }
+end
+
+-- True when a provider can be used for requests (API key or connected account).
+function AIHelper:isProviderConfigured(provider_id)
+    if provider_id == OPENAI_ACCOUNT then
+        return self:getOpenAIAccountStatus().connected
+    end
+    local config = self.providers and self.providers[provider_id]
+    return config ~= nil and config.api_key ~= nil and config.api_key ~= ""
+end
+
+function AIHelper:isSubscriptionPrimary()
+    local primary = (self.settings and self.settings.primary_ai) or DEFAULT_AI.primary
+    return primary.provider == OPENAI_ACCOUNT
+end
+
+function AIHelper:_openAIAccountInstructions()
+    return (self.prompts and self.prompts.system_instruction or "Return valid JSON ONLY.")
+        .. " You MUST output strictly valid JSON, starting with '{'."
+end
+
+-- Build a pinned, secure-tagged subscription request. Runs in the PARENT only:
+-- Auth:getAccessContext may refresh and persist rotated credentials here, before
+-- any fork, so a cancellable child never rotates tokens.
+function AIHelper:buildOpenAIAccountRequest(prompt, model, force_refresh)
+    local Auth = self:_getOpenAIAuth()
+    local Responses = self:_getOpenAIResponses()
+    if not Auth or not Responses then
+        return nil, "error_auth", "ChatGPT subscription support is unavailable."
+    end
+    local ok, ctx, code, msg = pcall(Auth.getAccessContext, Auth, force_refresh == true)
+    if not ok then
+        return nil, "error_auth", "ChatGPT sign-in could not be loaded. Reconnect your account."
+    end
+    if type(ctx) ~= "table" then
+        return nil, "error_auth", (type(msg) == "string" and msg) or "Sign in with ChatGPT first."
+    end
+    return Responses.buildRequest({
+        model = model,
+        instructions = self:_openAIAccountInstructions(),
+        prompt = prompt,
+        reasoning_effort = self.settings and self.settings.reasoning_effort,
+        access_token = ctx.access_token,
+        account_id = ctx.account_id,
+    })
+end
+
+-- Perform one secure-tagged request via verified SecureHTTP. Endpoint is
+-- pinned; any other URL is refused so tokens cannot leak to a custom endpoint.
+-- Returns code_num, body (safe to handle) or nil, err_code, safe_msg.
+function AIHelper:_performSecureRequest(req, timeout)
+    local Responses = self:_getOpenAIResponses()
+    local SecureHTTP = self:_getSecureHTTP()
+    if not Responses or not Responses.isPinnedRequest(req) then
+        return nil, "error_api", "Refused to send subscription credentials to an unexpected endpoint."
+    end
+    if not SecureHTTP then
+        return nil, "error_network", "Verified TLS transport is unavailable."
+    end
+    local ok, a, b, c = pcall(SecureHTTP.request, SecureHTTP, req.url, "POST", req.headers, req.body, timeout or 600)
+    if not ok then
+        return nil, "error_network", "The secure connection failed."
+    end
+    if a == nil then
+        -- (nil, error_code, safe_message, {})
+        return nil, "error_network", (type(c) == "string" and c) or "The secure connection failed."
+    end
+    return tonumber(b), c
+end
+
 -- Build all possible HTTP request parameters (primary and fallback) for a comprehensive fetch.
 -- Returns: { {url, headers, body, provider, model}, ... } or nil, error_code, error_msg
 function AIHelper:buildComprehensiveRequest(title, author, context, prompt_override)
@@ -257,10 +371,25 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
     local primary = self.settings.primary_ai or DEFAULT_AI.primary
     local secondary = self.settings.secondary_ai or DEFAULT_AI.secondary
 
+    -- Billing policy: subscription-primary NEVER falls through to any paid API
+    -- secondary, including when the subscription request cannot even be built.
+    if primary.provider == OPENAI_ACCOUNT then
+        local req, code, msg = self:buildOpenAIAccountRequest(prompt, self:resolveModel(primary.provider, primary.model))
+        if not req then return nil, code, msg end
+        return { req }
+    end
+
     local requests = {}
     for _, ai in ipairs({ primary, secondary }) do
         local config = self.providers[ai.provider]
-        if config and config.api_key and config.api_key ~= "" then
+        if ai.provider == OPENAI_ACCOUNT then
+            -- API-primary with an explicitly chosen subscription secondary: the
+            -- subscription is not paid API usage, so keep it as the fallback.
+            if self:isProviderConfigured(OPENAI_ACCOUNT) then
+                local req = self:buildOpenAIAccountRequest(prompt, self:resolveModel(ai.provider, ai.model))
+                if req then table.insert(requests, req) end
+            end
+        elseif config and config.api_key and config.api_key ~= "" then
             local url, headers, body, stream_format
             local resolved_model = self:resolveModel(ai.provider, ai.model)
             if ai.provider == "gemini" then
@@ -492,6 +621,7 @@ function AIHelper:hasApiKey()
     if self.providers.claude and self.providers.claude.api_key and self.providers.claude.api_key ~= "" then return true end
     if self.providers.custom1 and self.providers.custom1.api_key and self.providers.custom1.api_key ~= "" then return true end
     if self.providers.custom2 and self.providers.custom2.api_key and self.providers.custom2.api_key ~= "" then return true end
+    if self:getOpenAIAccountStatus().connected then return true end
     return false
 end
 
@@ -679,6 +809,333 @@ function AIHelper:normalizeOpenRouterStream(response_text, stream_format)
     })
 end
 
+-- Request chain executed inside the forked child (extracted for testability).
+-- Secure-tagged subscription requests always use SecureHTTP here, never refresh
+-- credentials, and never fall through to later (paid) requests.
+function AIHelper:_runChildRequests(request_params, result_file)
+    self:log("AIHelper Child: Started background process")
+    -- Legacy (API-key) transport is initialised lazily, only when a
+    -- non-subscription request actually needs it. Subscription requests never
+    -- touch ssl.https / cert_verify / socketutil.
+    local http_req, ltn12_req, socketutil_req
+    local function legacyHTTP()
+        if not http_req then
+            http_req = require("socket.http")
+            local https_req = require("ssl.https")
+            ltn12_req = require("ltn12")
+            socketutil_req = require("socketutil")
+            https_req.cert_verify = false
+            -- Increased timeout to 600s (10m) to accommodate reasoning models computing in the background
+            socketutil_req:set_timeout(600, 1200)
+        end
+    end
+
+    local requests = request_params
+    if request_params.url then requests = { request_params } end -- Handle single request fallback
+
+    local success_found = false
+    for i, req in ipairs(requests) do
+        self:log(string.format("AIHelper Child: Sending request %d/%d to %s (%s)", i, #requests, req.provider, req.model or "default"))
+
+        local ok, code, response_headers, status, response_text, code_num
+        local attempts = 0
+        local max_attempts = 2
+
+        -- Any subscription-bound request is handled on the secure route. A
+        -- subscription request missing its secure tag is refused outright so
+        -- its credentials can never reach legacy HTTP.
+        local is_subscription = req.secure or req.provider == OPENAI_ACCOUNT
+        if is_subscription and not req.secure then
+            attempts = max_attempts
+            ok, code, response_headers = nil, "SECURE_ERROR", {}
+            response_text = "Refused to send subscription credentials without verified transport."
+            code_num = nil
+        end
+
+        while attempts < max_attempts do
+            attempts = attempts + 1
+            if is_subscription then
+                -- Explicit verified transport; never the generic socket.http
+                -- path. The child never refreshes credentials: a 401 is
+                -- surfaced as a reconnect/retry error to the parent.
+                local secure_code, secure_body_or_err, secure_msg = self:_performSecureRequest(req, 600)
+                if secure_code then
+                    ok, code, response_headers, response_text = 1, secure_code, {}, secure_body_or_err or ""
+                else
+                    ok, code, response_headers = nil, "SECURE_ERROR", {}
+                    response_text = secure_msg or "The secure connection failed."
+                end
+                code_num = tonumber(code)
+                -- No automatic retry on the subscription route: failures are
+                -- surfaced so the user can retry/reconnect visibly.
+                break
+            end
+            do
+            legacyHTTP()
+            local response_body = {}
+            local request = {
+                url = req.url,
+                method = "POST",
+                headers = req.headers or {},
+                source = ltn12_req.source.string(req.body or ""),
+                sink = socketutil_req.table_sink(response_body)
+            }
+            ok, code, response_headers, status = http_req.request(request)
+            response_text = table.concat(response_body)
+            code_num = tonumber(code)
+
+            if code_num == 503 and attempts < max_attempts then
+                self:log("AIHelper Child: 503 Service Overloaded — retrying in 2s...")
+                socket.sleep(2)
+            else
+                break
+            end
+            end
+        end
+
+        if is_subscription then
+            -- Subscription route: strict SSE terminal + X-Ray JSON validation,
+            -- safe error envelopes only (never raw bodies or tokens).
+            local Responses = self:_getOpenAIResponses()
+            local out_code, out_text
+            if code_num == 200 and Responses then
+                local normalized, err_code, err_msg = Responses.normalizeStream(response_text)
+                if normalized then
+                    out_code, out_text = 200, normalized
+                else
+                    out_code, out_text = 502, Responses.errorEnvelope(err_code, err_msg)
+                end
+            elseif Responses then
+                local err_code, err_msg
+                if code_num then
+                    err_code, err_msg = Responses.classifyHttpError(code_num, response_text)
+                else
+                    err_code, err_msg = "error_network", response_text
+                end
+                out_code, out_text = code_num or 0, Responses.errorEnvelope(err_code, err_msg)
+            else
+                out_code, out_text = 0, json.encode({ error = { code = "error_api", message = "ChatGPT subscription support is unavailable." } })
+            end
+            self:log(string.format("AIHelper Child: Subscription request finished with code %s", tostring(out_code)))
+            -- The subscription outcome is always final: never fall through to
+            -- any later (paid) request in the chain.
+            local f = io.open(result_file, "w")
+            if f then
+                f:write(tostring(out_code) .. "\n")
+                f:write(req.provider .. "\n")
+                f:write(out_text)
+                f:close()
+            end
+            if out_code == 200 then success_found = true end
+            break
+        end
+
+        -- Mirror the content-length completeness check from makeRequest (lines 167-170)
+        if response_headers and response_headers["content-length"] then
+            local clen = tonumber(response_headers["content-length"])
+            if clen and #response_text < clen then
+                self:log(string.format(
+                    "AIHelper Child: Incomplete response from %s — got %d bytes, expected %d. Treating as failure.",
+                    req.provider, #response_text, clen))
+                code_num = nil -- prevents falling into the code_num==200 block below
+            end
+        end
+
+        if code_num == 200 and req.stream_format then
+            local normalized, stream_error = self:normalizeOpenRouterStream(response_text, req.stream_format)
+            if normalized then
+                response_text = normalized
+            else
+                code = 502
+                code_num = 502
+                response_text = json.encode({
+                    error = { message = stream_error },
+                })
+            end
+        end
+
+        self:log("AIHelper Child: Request finished with code " .. tostring(code))
+
+        -- Add pacing after transient failures to avoid "cascading" quota/load issues on fallback
+        if code_num == 429 or code_num == 503 then
+            self:log("AIHelper Child: Transient error " .. tostring(code_num) .. " — pacing fallback (2s)")
+            socket.sleep(2)
+        end
+
+        if code_num == 200 then
+            -- Quick JSON validation before accepting the response
+            local json_req = require("json")
+            local valid_json = false
+            local parse_ok, parsed = pcall(json_req.decode, response_text)
+            if parse_ok and parsed then
+                -- Gemini wraps content in candidates[].content.parts[].text
+                if parsed.candidates and parsed.candidates[1] then
+                    local ai_text = ""
+                    local parts = parsed.candidates[1].content and parsed.candidates[1].content.parts or {}
+                    for _, p in ipairs(parts) do
+                        if p.text and not p.thought then
+                            ai_text = ai_text .. p.text
+                        end
+                    end
+                    local finish_reason = (parsed.candidates[1] and parsed.candidates[1].finishReason) or "STOP"
+                    if #ai_text == 0 then
+                        self:log("AIHelper Child: Gemini ai_text empty. finishReason=" .. finish_reason)
+                    end
+                    if #ai_text > 0 then
+                        local inner_ok, inner = pcall(json_req.decode, ai_text)
+                        valid_json = inner_ok and inner ~= nil
+                        if not valid_json then
+                            -- Try to find JSON boundaries for truncated responses
+                            local first_brace = ai_text:find("{", 1, true)
+                            if first_brace then
+                                -- Part B: Try to repair before giving up
+                                local repaired = self:fixTruncatedJSON(ai_text:sub(first_brace))
+                                local repair_ok, repair_data = pcall(json_req.decode, repaired)
+                                if repair_ok and repair_data then
+                                    self:log("AIHelper Child: fixTruncatedJSON succeeded for " .. req.provider)
+                                    local synthetic = json_req.encode({
+                                        candidates = {{
+                                            content = { parts = {{ text = repaired }} },
+                                            finishReason = "STOP"
+                                        }}
+                                    })
+                                    response_text = synthetic
+                                    valid_json = true
+                                else
+                                    self:log("AIHelper Child: Quick repair unsuccessful; handing off to main thread for advanced parsing")
+                                    valid_json = true -- Fall back to main thread's repair if child fails but it has a brace
+                                end
+                            end
+                        end
+                    end
+                -- ChatGPT wraps content in choices[].message.content (or delta/text)
+                elseif parsed.choices and parsed.choices[1] then
+                    local choice = parsed.choices[1]
+                    local content
+                    if type(choice) == "table" then
+                        if type(choice.message) == "table" and type(choice.message.content) == "string" then
+                            content = choice.message.content
+                        elseif type(choice.delta) == "table" and type(choice.delta.content) == "string" then
+                            content = choice.delta.content
+                        elseif type(choice.text) == "string" then
+                            content = choice.text
+                        end
+                    end
+                    if content then
+                        local inner_ok, inner = pcall(json_req.decode, content)
+                        valid_json = inner_ok and inner ~= nil
+                        if not valid_json then
+                            local first_brace = content:find("{", 1, true)
+                            if first_brace then
+                                local repaired = self:fixTruncatedJSON(content:sub(first_brace))
+                                local repair_ok, repair_data = pcall(json_req.decode, repaired)
+                                if repair_ok and repair_data then
+                                    self:log("AIHelper Child: fixTruncatedJSON succeeded for ChatGPT/" .. req.provider)
+                                    local synthetic = json_req.encode({
+                                        choices = {{
+                                            message = { content = repaired, role = "assistant" }
+                                        }}
+                                    })
+                                    response_text = synthetic
+                                    valid_json = true
+                                else
+                                    self:log("AIHelper Child: Quick repair unsuccessful; handing off to main thread for advanced parsing")
+                                    valid_json = true
+                                end
+                            end
+                        end
+                    end
+                -- Anthropic wraps content in content[].text
+                elseif type(parsed.content) == "table" then
+                    local content = nil
+                    for _, block in ipairs(parsed.content) do
+                        if type(block) == "table" and (block.type == "text" or (not block.type and block.text)) and type(block.text) == "string" then
+                            content = block.text
+                            break
+                        end
+                    end
+                    if content then
+                        content = content:gsub("^%s*```%w*%s*", ""):gsub("%s*```%s*$", "")
+                        local text_to_decode = content
+                        if not content:find("^%s*{") then
+                            text_to_decode = "{" .. content
+                        end
+                        local inner_ok, inner = pcall(json_req.decode, text_to_decode)
+                        valid_json = inner_ok and inner ~= nil
+                        if not valid_json then
+                            local first_brace = text_to_decode:find("{", 1, true)
+                            if first_brace then
+                                local repaired = self:fixTruncatedJSON(text_to_decode:sub(first_brace))
+                                local repair_ok, repair_data = pcall(json_req.decode, repaired)
+                                if repair_ok and repair_data then
+                                    self:log("AIHelper Child: fixTruncatedJSON succeeded for Anthropic / " .. req.provider)
+                                    local text_for_synthetic = repaired
+                                    if not content:find("^%s*{") then
+                                        text_for_synthetic = repaired:sub(2)
+                                    end
+                                    local synthetic = json_req.encode({
+                                        content = {{ text = text_for_synthetic, type = "text" }}
+                                    })
+                                    response_text = synthetic
+                                    valid_json = true
+                                else
+                                    self:log("AIHelper Child: Quick repair unsuccessful; handing off to main thread for advanced parsing")
+                                    valid_json = true
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            if valid_json then
+                -- Success! Write result to file and exit loop
+                local f = io.open(result_file, "w")
+                if f then
+                    f:write(tostring(code) .. "\n")
+                    f:write(req.provider .. "\n")
+                    f:write(response_text)
+                    f:close()
+                    self:log("AIHelper Child: Result written to " .. result_file)
+                    success_found = true
+                    break
+                else
+                    self:log("AIHelper Child: Failed to open result file " .. result_file)
+                end
+            else
+                self:log(string.format("AIHelper Child: Provider %s returned 200 but JSON is invalid/truncated. Trying fallback.", req.provider))
+                -- Fall through to try the next provider
+                if i == #requests then
+                    -- Last provider also failed validation — write it anyway so main thread can attempt repair
+                    local f = io.open(result_file, "w")
+                    if f then
+                        f:write(tostring(code) .. "\n")
+                        f:write(req.provider .. "\n")
+                        f:write(response_text)
+                        f:close()
+                    end
+                end
+            end
+        else
+            self:log(string.format("AIHelper Child: Provider %s failed with code %s", req.provider, tostring(code)))
+            if response_text and #response_text > 0 then
+                self:log("AIHelper Child: Error response: " .. response_text:sub(1, 500))
+            end
+            -- If it's the last one, write the error
+            if i == #requests then
+                local f = io.open(result_file, "w")
+                if f then
+                    f:write(tostring(code) .. "\n")
+                    f:write(req.provider .. "\n")
+                    f:write(response_text)
+                    f:close()
+                end
+            end
+        end
+    end
+    if socketutil_req then socketutil_req:reset_timeout() end
+end
+
 -- Fork a child process to perform the HTTP request. Returns true if started.
 function AIHelper:makeRequestAsync(request_params, result_file)
     if self._async_child_pid and not self:_reapAsyncChild(self._async_child_pid) then
@@ -692,255 +1149,10 @@ function AIHelper:makeRequestAsync(request_params, result_file)
 
     local ffiutil = getFFIUtil()
     local ok_ffi = ffiutil ~= nil
-    
+
     local function child_logic(pid, write_fd)
         local child_ok, child_err = pcall(function()
-            self:log("AIHelper Child: Started background process")
-            local http_req = require("socket.http")
-            local https_req = require("ssl.https")
-            local ltn12_req = require("ltn12")
-            local socketutil_req = require("socketutil")
-            https_req.cert_verify = false
-            -- Increased timeout to 600s (10m) to accommodate reasoning models computing in the background
-            socketutil_req:set_timeout(600, 1200)
-
-            local requests = request_params
-            if request_params.url then requests = { request_params } end -- Handle single request fallback
-
-            local success_found = false
-            for i, req in ipairs(requests) do
-                self:log(string.format("AIHelper Child: Sending request %d/%d to %s (%s)", i, #requests, req.provider, req.model or "default"))
-                
-                local ok, code, response_headers, status, response_text, code_num
-                local attempts = 0
-                local max_attempts = 2
-
-                while attempts < max_attempts do
-                    attempts = attempts + 1
-                    local response_body = {}
-                    local request = {
-                        url = req.url,
-                        method = "POST",
-                        headers = req.headers or {},
-                        source = ltn12_req.source.string(req.body or ""),
-                        sink = socketutil_req.table_sink(response_body)
-                    }
-                    ok, code, response_headers, status = http_req.request(request)
-                    response_text = table.concat(response_body)
-                    code_num = tonumber(code)
-
-                    if code_num == 503 and attempts < max_attempts then
-                        self:log("AIHelper Child: 503 Service Overloaded — retrying in 2s...")
-                        socket.sleep(2)
-                    else
-                        break
-                    end
-                end
-
-                -- Mirror the content-length completeness check from makeRequest (lines 167-170)
-                if response_headers and response_headers["content-length"] then
-                    local clen = tonumber(response_headers["content-length"])
-                    if clen and #response_text < clen then
-                        self:log(string.format(
-                            "AIHelper Child: Incomplete response from %s — got %d bytes, expected %d. Treating as failure.",
-                            req.provider, #response_text, clen))
-                        code_num = nil -- prevents falling into the code_num==200 block below
-                    end
-                end
-
-                if code_num == 200 and req.stream_format then
-                    local normalized, stream_error = self:normalizeOpenRouterStream(response_text, req.stream_format)
-                    if normalized then
-                        response_text = normalized
-                    else
-                        code = 502
-                        code_num = 502
-                        response_text = json.encode({
-                            error = { message = stream_error },
-                        })
-                    end
-                end
-
-                self:log("AIHelper Child: Request finished with code " .. tostring(code))
-
-                -- Add pacing after transient failures to avoid "cascading" quota/load issues on fallback
-                if code_num == 429 or code_num == 503 then
-                    self:log("AIHelper Child: Transient error " .. tostring(code_num) .. " — pacing fallback (2s)")
-                    socket.sleep(2)
-                end
-
-                if code_num == 200 then
-                    -- Quick JSON validation before accepting the response
-                    local json_req = require("json")
-                    local valid_json = false
-                    local parse_ok, parsed = pcall(json_req.decode, response_text)
-                    if parse_ok and parsed then
-                        -- Gemini wraps content in candidates[].content.parts[].text
-                        if parsed.candidates and parsed.candidates[1] then
-                            local ai_text = ""
-                            local parts = parsed.candidates[1].content and parsed.candidates[1].content.parts or {}
-                            for _, p in ipairs(parts) do
-                                if p.text and not p.thought then
-                                    ai_text = ai_text .. p.text
-                                end
-                            end
-                            local finish_reason = (parsed.candidates[1] and parsed.candidates[1].finishReason) or "STOP"
-                            if #ai_text == 0 then
-                                self:log("AIHelper Child: Gemini ai_text empty. finishReason=" .. finish_reason)
-                            end
-                            if #ai_text > 0 then
-                                local inner_ok, inner = pcall(json_req.decode, ai_text)
-                                valid_json = inner_ok and inner ~= nil
-                                if not valid_json then
-                                    -- Try to find JSON boundaries for truncated responses
-                                    local first_brace = ai_text:find("{", 1, true)
-                                    if first_brace then
-                                        -- Part B: Try to repair before giving up
-                                        local repaired = self:fixTruncatedJSON(ai_text:sub(first_brace))
-                                        local repair_ok, repair_data = pcall(json_req.decode, repaired)
-                                        if repair_ok and repair_data then
-                                            self:log("AIHelper Child: fixTruncatedJSON succeeded for " .. req.provider)
-                                            local synthetic = json_req.encode({
-                                                candidates = {{
-                                                    content = { parts = {{ text = repaired }} },
-                                                    finishReason = "STOP"
-                                                }}
-                                            })
-                                            response_text = synthetic
-                                            valid_json = true
-                                        else
-                                            self:log("AIHelper Child: Quick repair unsuccessful; handing off to main thread for advanced parsing")
-                                            valid_json = true -- Fall back to main thread's repair if child fails but it has a brace
-                                        end
-                                    end
-                                end
-                            end
-                        -- ChatGPT wraps content in choices[].message.content (or delta/text)
-                        elseif parsed.choices and parsed.choices[1] then
-                            local choice = parsed.choices[1]
-                            local content
-                            if type(choice) == "table" then
-                                if type(choice.message) == "table" and type(choice.message.content) == "string" then
-                                    content = choice.message.content
-                                elseif type(choice.delta) == "table" and type(choice.delta.content) == "string" then
-                                    content = choice.delta.content
-                                elseif type(choice.text) == "string" then
-                                    content = choice.text
-                                end
-                            end
-                            if content then
-                                local inner_ok, inner = pcall(json_req.decode, content)
-                                valid_json = inner_ok and inner ~= nil
-                                if not valid_json then
-                                    local first_brace = content:find("{", 1, true)
-                                    if first_brace then
-                                        local repaired = self:fixTruncatedJSON(content:sub(first_brace))
-                                        local repair_ok, repair_data = pcall(json_req.decode, repaired)
-                                        if repair_ok and repair_data then
-                                            self:log("AIHelper Child: fixTruncatedJSON succeeded for ChatGPT/" .. req.provider)
-                                            local synthetic = json_req.encode({
-                                                choices = {{
-                                                    message = { content = repaired, role = "assistant" }
-                                                }}
-                                            })
-                                            response_text = synthetic
-                                            valid_json = true
-                                        else
-                                            self:log("AIHelper Child: Quick repair unsuccessful; handing off to main thread for advanced parsing")
-                                            valid_json = true
-                                        end
-                                    end
-                                end
-                            end
-                        -- Anthropic wraps content in content[].text
-                        elseif type(parsed.content) == "table" then
-                            local content = nil
-                            for _, block in ipairs(parsed.content) do
-                                if type(block) == "table" and (block.type == "text" or (not block.type and block.text)) and type(block.text) == "string" then
-                                    content = block.text
-                                    break
-                                end
-                            end
-                            if content then
-                                content = content:gsub("^%s*```%w*%s*", ""):gsub("%s*```%s*$", "")
-                                local text_to_decode = content
-                                if not content:find("^%s*{") then
-                                    text_to_decode = "{" .. content
-                                end
-                                local inner_ok, inner = pcall(json_req.decode, text_to_decode)
-                                valid_json = inner_ok and inner ~= nil
-                                if not valid_json then
-                                    local first_brace = text_to_decode:find("{", 1, true)
-                                    if first_brace then
-                                        local repaired = self:fixTruncatedJSON(text_to_decode:sub(first_brace))
-                                        local repair_ok, repair_data = pcall(json_req.decode, repaired)
-                                        if repair_ok and repair_data then
-                                            self:log("AIHelper Child: fixTruncatedJSON succeeded for Anthropic / " .. req.provider)
-                                            local text_for_synthetic = repaired
-                                            if not content:find("^%s*{") then
-                                                text_for_synthetic = repaired:sub(2)
-                                            end
-                                            local synthetic = json_req.encode({
-                                                content = {{ text = text_for_synthetic, type = "text" }}
-                                            })
-                                            response_text = synthetic
-                                            valid_json = true
-                                        else
-                                            self:log("AIHelper Child: Quick repair unsuccessful; handing off to main thread for advanced parsing")
-                                            valid_json = true
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                    
-                    if valid_json then
-                        -- Success! Write result to file and exit loop
-                        local f = io.open(result_file, "w")
-                        if f then
-                            f:write(tostring(code) .. "\n")
-                            f:write(req.provider .. "\n")
-                            f:write(response_text)
-                            f:close()
-                            self:log("AIHelper Child: Result written to " .. result_file)
-                            success_found = true
-                            break
-                        else
-                            self:log("AIHelper Child: Failed to open result file " .. result_file)
-                        end
-                    else
-                        self:log(string.format("AIHelper Child: Provider %s returned 200 but JSON is invalid/truncated. Trying fallback.", req.provider))
-                        -- Fall through to try the next provider
-                        if i == #requests then
-                            -- Last provider also failed validation — write it anyway so main thread can attempt repair
-                            local f = io.open(result_file, "w")
-                            if f then
-                                f:write(tostring(code) .. "\n")
-                                f:write(req.provider .. "\n")
-                                f:write(response_text)
-                                f:close()
-                            end
-                        end
-                    end
-                else
-                    self:log(string.format("AIHelper Child: Provider %s failed with code %s", req.provider, tostring(code)))
-                    if response_text and #response_text > 0 then
-                        self:log("AIHelper Child: Error response: " .. response_text:sub(1, 500))
-                    end
-                    -- If it's the last one, write the error
-                    if i == #requests then
-                        local f = io.open(result_file, "w")
-                        if f then
-                            f:write(tostring(code) .. "\n")
-                            f:write(req.provider .. "\n")
-                            f:write(response_text)
-                            f:close()
-                        end
-                    end
-                end
-            end
-            socketutil_req:reset_timeout()
+            self:_runChildRequests(request_params, result_file)
         end)
         
         if not child_ok then
@@ -1085,6 +1297,11 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
         if response_text and #response_text > 0 then
             local s, err_data = pcall(json.decode, response_text)
             if s and type(err_data) == "table" and type(err_data.error) == "table" and err_data.error.message then
+                if provider == OPENAI_ACCOUNT then
+                    -- Already a safe, user-facing message with a stable error code.
+                    local sub_code = type(err_data.error.code) == "string" and err_data.error.code:match("^error_[%w_]+$")
+                    return false, sub_code or "error_api", tostring(err_data.error.message)
+                end
                 error_detail = error_detail .. ": " .. tostring(err_data.error.message)
             end
         end
@@ -2095,12 +2312,25 @@ function AIHelper:executeUnifiedRequest(prompt)
     local primary = self.settings.primary_ai or DEFAULT_AI.primary
     local secondary = self.settings.secondary_ai or DEFAULT_AI.secondary
     
+    -- Billing policy: subscription-primary never falls back to a paid secondary.
+    if primary.provider == OPENAI_ACCOUNT then
+        return self:callOpenAIAccount(prompt, self:resolveModel(primary.provider, primary.model))
+    end
+
     local models_to_try = { primary, secondary }
     local last_err = "No models configured."
     
     for _, ai in ipairs(models_to_try) do
         local config = self.providers[ai.provider]
-        if not config or not config.api_key or config.api_key == "" then
+        if ai.provider == OPENAI_ACCOUNT then
+            if self:isProviderConfigured(OPENAI_ACCOUNT) then
+                local result, _, err_msg = self:callOpenAIAccount(prompt, self:resolveModel(ai.provider, ai.model))
+                if result then return result end
+                last_err = err_msg or "ChatGPT subscription request failed"
+            else
+                last_err = "Sign in with ChatGPT first."
+            end
+        elseif not config or not config.api_key or config.api_key == "" then
             self:log("AIHelper: Skipping " .. ai.provider .. " (" .. tostring(ai.model) .. ") - API Key missing")
             last_err = "API Key not set for " .. (ai.provider == "gemini" and "Google Gemini" or "ChatGPT")
         else
@@ -2194,6 +2424,47 @@ function AIHelper:mergeDescriptionsWithAI(primary_desc, secondary_desc)
     end
     self:log("AIHelper: mergeDescriptionsWithAI failed: " .. tostring(err_msg))
     return nil
+end
+
+-- Synchronous subscription request. Token refresh happens here in the parent
+-- (before the Trapper subprocess). On a 401 we force exactly one parent-side
+-- refresh and retry once; any further failure asks the user to reconnect.
+function AIHelper:callOpenAIAccount(prompt, model, _retried)
+    local req, code, msg = self:buildOpenAIAccountRequest(prompt, model, _retried == true)
+    if not req then return nil, code, msg end
+    local Responses = self:_getOpenAIResponses()
+    self:log("AIHelper: Starting ChatGPT subscription request for model: " .. tostring(req.model))
+
+    local function perform()
+        return self:_performSecureRequest(req, 600)
+    end
+    local status, body_or_code, err_msg
+    if self.trap_widget and Trapper and Trapper.dismissableRunInSubprocess then
+        local completed, a, b, c = Trapper:dismissableRunInSubprocess(perform, self.trap_widget)
+        if not completed then return nil, "USER_CANCELLED", "Request cancelled" end
+        status, body_or_code, err_msg = a, b, c
+    else
+        status, body_or_code, err_msg = perform()
+    end
+    self:log("AIHelper: ChatGPT subscription response code: " .. tostring(status))
+
+    if not status then
+        return nil, body_or_code or "error_network", err_msg or "The secure connection failed."
+    end
+    if status == 401 and not _retried then
+        self:log("AIHelper: ChatGPT subscription 401; refreshing once in parent")
+        return self:callOpenAIAccount(prompt, model, true)
+    end
+    if status ~= 200 then
+        return nil, Responses.classifyHttpError(status, body_or_code)
+    end
+    local text, d_code, d_msg = Responses.decodeStream(body_or_code)
+    if not text then return nil, d_code, d_msg end
+    local cleaned, v_code, v_msg = Responses.validateXRayJSON(text)
+    if not cleaned then return nil, v_code, v_msg end
+    local parsed, perr = self:parseAIResponse(cleaned)
+    if parsed then return parsed end
+    return nil, "error_parse", "ChatGPT response was not valid X-Ray JSON."
 end
 
 function AIHelper:callClaude(prompt, config, current_model)
@@ -2900,6 +3171,12 @@ function AIHelper:validateProviderKey(provider_id)
         return { ok = false, error = "Provider not found" }
     end
     local prov = self.providers[provider_id]
+    if provider_id == OPENAI_ACCOUNT then
+        -- Status only; entitlement is proven by the first real request.
+        local st = self:getOpenAIAccountStatus()
+        if not st.connected then return { ok = false, not_configured = true, error = "Not signed in" } end
+        return { ok = true, latency_ms = 0 }
+    end
     local key = prov.api_key or ""
     if #key == 0 then
         return { ok = false, not_configured = true, error = "No key configured" }
@@ -3024,6 +3301,9 @@ function AIHelper:clearAllAPIKeys()
         custom2_is_reasoning = false,
         welcome_wizard_dismissed = false,
     }
+    -- 0. Sign out of the ChatGPT subscription (dedicated OAuth store only)
+    self:_logoutOpenAIAccount()
+
     -- 1. Wipe UI settings
     self:saveSettings(updates)
 
@@ -3052,8 +3332,22 @@ function AIHelper:clearAllAPIKeys()
     return true
 end
 
+function AIHelper:_logoutOpenAIAccount()
+    local Auth = self:_getOpenAIAuth()
+    if not Auth or type(Auth.logout) ~= "function" then return true end
+    local ok, res, _, msg = pcall(Auth.logout, Auth)
+    if not ok then return nil, "ChatGPT sign-out failed." end
+    if not res then return nil, msg end
+    return true
+end
+
 function AIHelper:clearProviderKey(provider_id)
     if not provider_id then return false end
+    if provider_id == OPENAI_ACCOUNT then
+        -- OAuth credentials never enter legacy settings/backup/config files.
+        local ok = self:_logoutOpenAIAccount()
+        return ok == true
+    end
     local updates = {
         [provider_id .. "_api_key"] = "",
         [provider_id .. "_use_ui_key"] = false,

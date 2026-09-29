@@ -1270,6 +1270,7 @@ end
 function M:closeAllMenus()
     -- Mark as cancelled to stop background tasks
     self.is_cancelled = true
+    if self.openai_account_ui then self.openai_account_ui:cancel() end
     
     if self.bg_scan_handle and self.bg_scan_handle.cancel then
         pcall(function() self.bg_scan_handle:cancel() end)
@@ -4736,6 +4737,10 @@ function M:showEnterKeyProviderDialog()
             }
         })
     end
+    table.insert(buttons, {{ text = "ChatGPT subscription (experimental) - account sign-in", callback = function()
+        UIManager:close(dlg)
+        self:showOpenAIAccount()
+    end }})
     table.insert(buttons, {
         {
             text = self.loc:t("cancel") or "Cancel",
@@ -4752,6 +4757,12 @@ function M:showEnterKeyProviderDialog()
         buttons = buttons,
     }
     UIManager:show(dlg)
+end
+
+function M:showOpenAIAccount()
+    local AccountUI = require(plugin_path .. "xray_openai_account_ui")
+    if not self.openai_account_ui then self.openai_account_ui = AccountUI:new(self) end
+    self.openai_account_ui:showAccount()
 end
 
 function M:promptProviderKeyEntry(provider, provider_name)
@@ -5315,6 +5326,17 @@ function M:getAPIKeysMenu()
         })
     end
 
+    table.insert(menu_items, {
+        text = "ChatGPT subscription (experimental) - account",
+        text_func = function()
+            local ok, auth = pcall(require, plugin_path .. "xray_openai_auth")
+            local status = ok and auth:getStatus()
+            return "ChatGPT subscription (experimental) - " .. ((status and status.connected) and "Connected" or "Not connected")
+        end,
+        keep_menu_open = true,
+        callback = function() self:showOpenAIAccount() end,
+    })
+
     -- Clear All Configured Keys button
     table.insert(menu_items, {
         text = self.loc:t("menu_clear_all_keys") or "Clear All API Keys...",
@@ -5758,6 +5780,11 @@ end
 function M:getAIModelSelectionMenu(setting_type)
     local providers = {
         {
+            id = "openai_account",
+            display_name = "ChatGPT subscription (experimental)",
+            models = { { id = "gpt-6-luna", cost = "subscription" } },
+        },
+        {
             id = "gemini",
             display_name = "Gemini",
             models = {
@@ -5835,7 +5862,7 @@ function M:getAIModelSelectionMenu(setting_type)
                     local model_id = m.id
                     local model_cost = m.cost
                     table.insert(sub_items, {
-                        text = model_id .. " [" .. (model_cost == "free" and self.loc:t("model_free") or self.loc:t("model_paid")) .. "]",
+                        text = model_id .. " [" .. (model_cost == "subscription" and "subscription quota" or (model_cost == "free" and self.loc:t("model_free") or self.loc:t("model_paid"))) .. "]",
                         checked_func = function()
                             if not self.ai_helper or not self.ai_helper.settings then return false end
                             local current = setting_type == "primary" and self.ai_helper.settings.primary_ai or self.ai_helper.settings.secondary_ai
@@ -5843,6 +5870,13 @@ function M:getAIModelSelectionMenu(setting_type)
                             return current.provider == provider_id and current.model == model_id
                         end,
                         callback = function()
+                            if provider_id == "openai_account" then
+                                local auth = require(plugin_path .. "xray_openai_auth")
+                                if not (auth:getStatus() or {}).connected then
+                                    self:showOpenAIAccount()
+                                    return
+                                end
+                            end
                             self.ai_helper:setUnifiedModel(setting_type, provider_id, model_id)
                             UIManager:setDirty(nil, "ui")
                         end
