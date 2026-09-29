@@ -2266,7 +2266,7 @@ function AIHelper:saveSettings(new_settings, keys_to_delete)
     
     -- Stage a candidate, write it to a temp file, then rename over the old
     -- file. Memory (self.settings, same table identity) is only updated after
-    -- the new file is durably in place, so a failed write leaves both the
+    -- the new file has successfully replaced the old one (no fsync), so a failed write leaves both the
     -- previous file and in-memory settings intact.
     self.settings = self.settings or {}
     local candidate = {}
