@@ -283,6 +283,20 @@ describe("AIHelper openai_account provider", function()
             assert.are.equal("openai_account", AIHelper.last_route.provider)
         end)
 
+        it("attributes same-provider routes by request index", function()
+            AIHelper._async_routes = {
+                { provider = "gemini", model = "m1", slot = "primary" },
+                { provider = "gemini", model = "m2", slot = "secondary" },
+            }
+            local tmp = os.tmpname()
+            local f = io.open(tmp, "w")
+            f:write("200\ngemini#2\n" .. json.encode({ candidates = { { content = { parts = { { text = '{"characters":[]}' } } } } } }))
+            f:close()
+            assert.is_table(AIHelper:checkAsyncResult(tmp))
+            assert.are.equal("secondary", AIHelper.last_route.slot)
+            assert.are.equal("m2", AIHelper.last_route.model)
+        end)
+
         it("never refreshes in the child on 401", function()
             local req = subReq()
             local before = auth.calls.context

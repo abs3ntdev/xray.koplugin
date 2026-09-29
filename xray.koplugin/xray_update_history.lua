@@ -18,6 +18,7 @@ local M = {
 local OUTCOMES = { success = true, failed = true, skipped = true, cancelled = true }
 local SLOTS = { primary = true, secondary = true }
 local COUNT_KEYS = { "characters", "locations", "terms", "timeline", "historical_figures" }
+local ADDED_OPS = { more_characters = true, more_terms = true }
 
 local function getJSON()
     local ok, json = pcall(require, "json")
@@ -196,7 +197,12 @@ function M.format(entries)
             for _, k in ipairs(COUNT_KEYS) do
                 if e.counts[k] then table.insert(c, k .. " " .. e.counts[k]) end
             end
-            if #c > 0 then line = line .. "\n  " .. table.concat(c, ", ") end
+            if #c > 0 then
+                -- "More" operations store newly added items; full updates
+                -- store totals after the merge was saved.
+                local label = ADDED_OPS[e.op] and "added: " or "totals: "
+                line = line .. "\n  " .. label .. table.concat(c, ", ")
+            end
         end
         if e.cache_saved == false then line = line .. "\n  cache not saved" end
         if e.error_code then line = line .. "\n  " .. e.error_code end

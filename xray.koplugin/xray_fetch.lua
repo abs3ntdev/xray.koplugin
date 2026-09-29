@@ -588,7 +588,7 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
         if self._active_ai_cancel == cancelActiveRequest then self._active_ai_cancel = nil end
     end
 
-    cancelActiveRequest = function(reason)
+    cancelActiveRequest = function(reason, history_code)
         if is_cancelled then return end
         is_cancelled = true
         if request_pid and self.ai_helper and self.ai_helper.cancelAsyncChild then
@@ -602,7 +602,7 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
         end
         finishActiveRequest()
         self:log("XRayPlugin: " .. reason)
-        notifyComplete(false, "cancelled", reason)
+        notifyComplete(false, history_code or "cancelled", reason)
     end
 
     self._active_ai_cancel = cancelActiveRequest
@@ -817,7 +817,7 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
                     if not self:isRequestTimedOut(request_started_at, request_timeout) then
                         UIManager:scheduleIn(2, poll)
                     else
-                        cancelActiveRequest("Fetch timed out")
+                        cancelActiveRequest("Fetch timed out", "error_timeout")
                         if not is_silent then
                             local ButtonDialog = require("ui/widget/buttondialog")
                             local title, text = utils:getFriendlyError("error_timeout", nil, self.loc)
@@ -851,13 +851,22 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
                 else
                     if wait_msg then UIManager:close(wait_msg) end
                     finishActiveRequest()
-                    local ok_fin, summary = pcall(self.finalizeXRayData, self, data, title, author, book_text, is_update, is_silent, current_page)
+                    -- Completion reflects the persisted outcome: merge/empty/save
+                    -- failures report failure so background catch-up does not
+                    -- advance. The async cache save reports back via callback.
+                    local function finishWith(summary)
+                        if completed then return end
+                        history_summary = type(summary) == "table" and summary or { outcome = "failed", error_code = "error_merge" }
+                        local ok_persisted = history_summary.outcome == "success"
+                        notifyComplete(ok_persisted, (not ok_persisted) and (history_summary.error_code or "error_merge") or nil)
+                    end
+                    local ok_fin, summary = pcall(self.finalizeXRayData, self, data, title, author, book_text, is_update, is_silent, current_page, finishWith)
                     if not ok_fin then
                         self:log("XRayPlugin: finalize failed: " .. tostring(summary))
-                        summary = { outcome = "failed", error_code = "error_merge" }
+                        finishWith({ outcome = "failed", error_code = "error_merge" })
+                    elseif not (type(summary) == "table" and summary.pending) then
+                        finishWith(summary)
                     end
-                    history_summary = type(summary) == "table" and summary or nil
-                    notifyComplete(true)
                 end
             end
             UIManager:scheduleIn(2, poll)
@@ -867,8 +876,10 @@ end
 
 
 -- Returns a metadata-only summary { outcome, error_code, counts, cache_saved }
--- for the update history.
-function M:finalizeXRayData(final_book_data, title, author, book_text, is_update, is_silent, current_page)
+-- for the update history. When the async cache save starts, the summary has
+-- pending = true and on_persisted(summary) is called once the save really
+-- completes (cache file renamed into place) or fails.
+function M:finalizeXRayData(final_book_data, title, author, book_text, is_update, is_silent, current_page, on_persisted)
     if self.destroyed or not self.ui or not self.ui.document then return { outcome = "failed", error_code = "error_closed" } end
     final_book_data.book_title = title
     final_book_data.author = author
@@ -1255,7 +1266,26 @@ function M:finalizeXRayData(final_book_data, title, author, book_text, is_update
 
     if not self.cache_manager then self.cache_manager = require(plugin_path .. "xray_cachemanager"):new() end
     local doc_file = (self.ui and self.ui.document) and self.ui.document.file
-    local cache_saved = doc_file and self.cache_manager:asyncSaveCache(doc_file, updated_data)
+    local persisted_counts = {
+        characters = #(self.characters or {}), locations = #(self.locations or {}),
+        terms = #(self.terms or {}), timeline = #(self.timeline or {}),
+        historical_figures = #(self.historical_figures or {}),
+    }
+    local save_reported = false
+    local function onSaveDone(saved)
+        if save_reported then return end
+        save_reported = true
+        if type(on_persisted) == "function" then
+            pcall(on_persisted, {
+                outcome = saved and "success" or "failed",
+                error_code = (not saved) and "error_save" or nil,
+                cache_saved = saved and true or false,
+                counts = persisted_counts,
+            })
+        end
+    end
+    local cache_saved = doc_file and self.cache_manager:asyncSaveCache(doc_file, updated_data, onSaveDone)
+    if not cache_saved then onSaveDone(false) end
 
     -- If book is part of a series, update this book's entry in SeriesCache
     if self.series_manager and (updated_data.series_slug or (self.ui and self.ui.document)) then
@@ -1344,14 +1374,12 @@ function M:finalizeXRayData(final_book_data, title, author, book_text, is_update
     end
 
     return {
+        -- pending: the real persisted outcome arrives via on_persisted.
+        pending = (cache_saved and not save_reported) and true or nil,
         outcome = cache_saved and "success" or "failed",
         error_code = (not cache_saved) and "error_save" or nil,
         cache_saved = cache_saved and true or false,
-        counts = {
-            characters = #(self.characters or {}), locations = #(self.locations or {}),
-            terms = #(self.terms or {}), timeline = #(self.timeline or {}),
-            historical_figures = #(self.historical_figures or {}),
-        },
+        counts = persisted_counts,
     }
 end
 
@@ -1800,14 +1828,23 @@ function M:fetchMoreEntities(entity_type)
                     updated_data.timeline = self.timeline or updated_data.timeline
                     updated_data.author_info = self.author_info or updated_data.author_info
 
-                    local more_saved = self.cache_manager:asyncSaveCache(doc_file, updated_data) and true or false
-                    self:recordUpdateHistory(historyRoute({
-                        op = history_op,
-                        outcome = more_saved and "success" or "failed",
-                        error_code = (not more_saved) and "error_save" or nil,
-                        cache_saved = more_saved,
-                        counts = is_terms and { terms = new_count } or { characters = new_count },
-                    }))
+                    -- History is written when the save really completes (or fails),
+                    -- never merely because the async save was queued.
+                    local more_route = historyRoute({})
+                    local more_reported = false
+                    local function onMoreSaved(saved)
+                        if more_reported then return end
+                        more_reported = true
+                        saved = saved and true or false
+                        self:recordUpdateHistory({
+                            op = history_op, provider = more_route.provider, model = more_route.model, slot = more_route.slot,
+                            outcome = saved and "success" or "failed",
+                            error_code = (not saved) and "error_save" or nil,
+                            cache_saved = saved,
+                            counts = is_terms and { terms = new_count } or { characters = new_count },
+                        })
+                    end
+                    if not self.cache_manager:asyncSaveCache(doc_file, updated_data, onMoreSaved) then onMoreSaved(false) end
 
                     if not is_terms then
                         local cur_p = self.ui and self.ui.getCurrentPage and self.ui:getCurrentPage() or 1
@@ -2053,11 +2090,19 @@ function M:fetchAuthorInfo()
                     self.book_type = author_data.book_type
                 end
                 
-                local author_saved = self.cache_manager:asyncSaveCache(doc_file, cache) and true or false
-                self:recordUpdateHistory(historyRoute({
-                    op = "author", outcome = author_saved and "success" or "failed",
-                    error_code = (not author_saved) and "error_save" or nil, cache_saved = author_saved,
-                }))
+                local author_route = historyRoute({})
+                local author_reported = false
+                local function onAuthorSaved(saved)
+                    if author_reported then return end
+                    author_reported = true
+                    saved = saved and true or false
+                    self:recordUpdateHistory({
+                        op = "author", provider = author_route.provider, model = author_route.model, slot = author_route.slot,
+                        outcome = saved and "success" or "failed",
+                        error_code = (not saved) and "error_save" or nil, cache_saved = saved,
+                    })
+                end
+                if not self.cache_manager:asyncSaveCache(doc_file, cache, onAuthorSaved) then onAuthorSaved(false) end
                 self:showAuthorInfo()
             end
         end

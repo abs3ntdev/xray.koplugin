@@ -275,10 +275,16 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
             end
 
             if coroutine.status(co) == "dead" then
-                pcall(function() f:close() end)
+                local closed = pcall(function() assert(f:close()) end)
                 pcall(os.remove, cache_file)
-                os.rename(temp_file, cache_file)
+                local renamed = closed and os.rename(temp_file, cache_file)
                 cleanupSave()
+                if not renamed then
+                    logger.warn("CacheManager: Could not finalize async cache write:", cache_file)
+                    pcall(os.remove, temp_file)
+                    if on_done_cb then on_done_cb(false) end
+                    return
+                end
                 logger.info("CacheManager: Saved cache asynchronously (cooperative) to:", cache_file)
                 AIHelper:log("CacheManager: Saved cache asynchronously (cooperative) to: " .. tostring(cache_file))
                 if on_done_cb then on_done_cb(true) end

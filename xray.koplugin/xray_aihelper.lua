@@ -1036,7 +1036,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
                 local f = io.open(result_file, "w")
                 if f then
                     f:write(tostring(out_code) .. "\n")
-                    f:write(tostring(req.provider) .. "\n")
+                    f:write(tostring(req.provider) .. "#" .. tostring(i) .. "\n")
                     f:write(out_text)
                     f:close()
                 end
@@ -1209,7 +1209,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
                 local f = io.open(result_file, "w")
                 if f then
                     f:write(tostring(code) .. "\n")
-                    f:write(req.provider .. "\n")
+                    f:write(req.provider .. "#" .. tostring(i) .. "\n")
                     f:write(response_text)
                     f:close()
                     self:log("AIHelper Child: Result written to " .. result_file)
@@ -1226,7 +1226,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
                     local f = io.open(result_file, "w")
                     if f then
                         f:write(tostring(code) .. "\n")
-                        f:write(req.provider .. "\n")
+                        f:write(req.provider .. "#" .. tostring(i) .. "\n")
                         f:write(response_text)
                         f:close()
                     end
@@ -1242,7 +1242,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
                 local f = io.open(result_file, "w")
                 if f then
                     f:write(tostring(code) .. "\n")
-                    f:write(req.provider .. "\n")
+                    f:write(req.provider .. "#" .. tostring(i) .. "\n")
                     f:write(response_text)
                     f:close()
                 end
@@ -1407,11 +1407,24 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
     local second_newline = rest:find("\n")
     if not second_newline then return false, "error_parse", "Malformed async result (no provider line)" end
     local provider = rest:sub(1, second_newline - 1)
+    -- Line 2 is "provider#index" (index into the request chain) so the
+    -- serving route is exact even when both slots share a provider.
+    local route_index
+    do
+        local p, idx = provider:match("^(.-)#(%d+)$")
+        if p then provider, route_index = p, tonumber(idx) end
+    end
     local response_text = rest:sub(second_newline + 1)
     -- Record which configured route produced this result (metadata only).
     self.last_route = { provider = provider }
-    for _, r in ipairs(self._async_routes or {}) do
-        if r.provider == provider then self.last_route = { provider = r.provider, model = r.model, slot = r.slot }; break end
+    local routes = self._async_routes or {}
+    local r = route_index and routes[route_index]
+    if r and r.provider == provider then
+        self.last_route = { provider = r.provider, model = r.model, slot = r.slot }
+    else
+        for _, cand in ipairs(routes) do
+            if cand.provider == provider then self.last_route = { provider = cand.provider, model = cand.model, slot = cand.slot }; break end
+        end
     end
 
     if code_str == "ERROR" then

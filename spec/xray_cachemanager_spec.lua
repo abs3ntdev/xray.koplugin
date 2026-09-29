@@ -63,6 +63,18 @@ describe("xray_cachemanager", function()
             assert.are.equal(101, loaded.last_fetch_page)
         end)
 
+        it("reports false from the cooperative save when the final rename fails", function()
+            local UIManager = require("ui/uimanager")
+            local old_sched, old_rename = UIManager.scheduleIn, os.rename
+            UIManager.scheduleIn = function(_, _, cb) cb() end
+            os.rename = function() return nil, "EXDEV" end
+            local result
+            local started = cache_manager:asyncSaveCache(test_book, { characters = {} }, function(res) result = res end)
+            UIManager.scheduleIn, os.rename = old_sched, old_rename
+            assert.is_true(started)
+            assert.is_false(result)
+        end)
+
         it("handles circular references gracefully", function()
             local data = { name = "Alice" }
             data.self = data -- Circular reference

@@ -47,6 +47,15 @@ describe("xray_update_history", function()
         assert.is_truthy(History.format(list):find("cache not saved", 1, true))
     end)
 
+    it("labels full-update totals and more-entities additions distinctly", function()
+        local text = History.format({
+            { ts = 1, op = "update", outcome = "success", counts = { characters = 12 } },
+            { ts = 2, op = "more_characters", outcome = "success", counts = { characters = 3 } },
+        })
+        assert.is_truthy(text:find("added: characters 3", 1, true))
+        assert.is_truthy(text:find("totals: characters 12", 1, true))
+    end)
+
     it("bounds the number of entries, keeping the newest", function()
         local h = History.new(path)
         for i = 1, History.MAX_ENTRIES + 15 do
@@ -231,6 +240,66 @@ describe("update history integration", function()
         plugin:cancelActiveAIRequest("user cancelled")
         local e = History.new(path):load()[1]
         assert.are.equal("cancelled", e.outcome)
+    end)
+
+    it("reports failure to the completion callback when finalize fails", function()
+        plugin.ai_helper = helper({ { characters = {} } })
+        plugin.finalizeXRayData = function() return { outcome = "failed", error_code = "error_empty" } end
+        local got
+        plugin:continueWithFetch(50, true, nil, true, nil, function(ok, code) got = { ok, code } end)
+        drain()
+        assert.is_false(got[1])
+        assert.are.equal("error_empty", got[2])
+    end)
+
+    it("waits for the real delayed save result before completing (failure)", function()
+        plugin.ai_helper = helper({ { characters = {} } })
+        local pending_cb
+        plugin.finalizeXRayData = function(_, _, _, _, _, _, _, _, on_persisted)
+            pending_cb = on_persisted
+            return { pending = true, outcome = "success", cache_saved = true }
+        end
+        local got
+        plugin:continueWithFetch(50, true, nil, true, nil, function(ok, code) got = { ok, code } end)
+        drain()
+        assert.is_nil(got)
+        assert.are.equal(0, #History.new(path):load())
+        pending_cb({ outcome = "failed", error_code = "error_save", cache_saved = false, counts = { characters = 2 } })
+        assert.is_false(got[1])
+        assert.are.equal("error_save", got[2])
+        local e = History.new(path):load()[1]
+        assert.are.equal("failed", e.outcome)
+        assert.are.equal(false, e.cache_saved)
+    end)
+
+    it("real finalize: queued save is not success until the save callback fires", function()
+        plugin.ai_helper = helper({ { characters = { { name = "Ann", description = "d" } } } })
+        local save_cb
+        plugin.cache_manager = {
+            asyncSaveCache = function(_, _, _, cb) save_cb = cb; return true end,
+            loadCache = function() return {} end,
+        }
+        plugin.characters, plugin.locations, plugin.timeline = {}, {}, {}
+        local got
+        plugin:continueWithFetch(50, true, nil, true, nil, function(ok, code) got = { ok, code } end)
+        drain()
+        assert.are.equal("function", type(save_cb))
+        assert.is_nil(got)
+        save_cb(false)
+        assert.is_false(got[1])
+        assert.are.equal("error_save", History.new(path):load()[1].error_code)
+    end)
+
+    it("records a fetch timeout as failed with error_timeout", function()
+        plugin.ai_helper = helper({ nil })
+        local old_timed = plugin.isRequestTimedOut
+        plugin.isRequestTimedOut = function() return true end
+        plugin:continueWithFetch(50, true, nil, true)
+        drain()
+        plugin.isRequestTimedOut = old_timed
+        local e = History.new(path):load()[1]
+        assert.are.equal("failed", e.outcome)
+        assert.are.equal("error_timeout", e.error_code)
     end)
 
     it("the viewer is only shown when explicitly opened", function()
