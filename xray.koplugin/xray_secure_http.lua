@@ -22,6 +22,12 @@ local allowed = {
     -- Optional TypeSafe Jev decision API (docs.typesafe.ai/api), exact host.
     ["api.typesafe.ai"] = true,
 }
+-- Separate, credential-free policy for the plugin updater only. It never
+-- widens the subscription host set above: public GitHub metadata and the exact
+-- commit archive, GET only, no Authorization/Cookie headers.
+local update_hosts = { ["api.github.com"] = true, ["codeload.github.com"] = true }
+local AUTH_POLICY = { hosts = allowed, max_bytes = 16 * 1024 * 1024 }
+local UPDATE_POLICY = { hosts = update_hosts, max_bytes = 24 * 1024 * 1024, public = true }
 local messages = {
     invalid_url = "Only official subscription HTTPS endpoints are allowed.",
     invalid_request = "The secure request was rejected.",
@@ -37,8 +43,8 @@ end
 
 -- SAN-only matching, deliberately no legacy Common Name fallback. A wildcard
 -- covers exactly one label and never a public suffix or a partial label.
-function SecureHTTP:matchesHostname(names, hostname)
-    if type(names) ~= "table" or not allowed[hostname] then return false end
+local function matchesHostname(names, hostname, hosts)
+    if type(names) ~= "table" or not hosts[hostname] then return false end
     for _, name in ipairs(names) do
         if type(name) == "string" and not name:find("[^%w%.%*%-]") then
             name = name:lower()
@@ -51,6 +57,9 @@ function SecureHTTP:matchesHostname(names, hostname)
         end
     end
     return false
+end
+function SecureHTTP:matchesHostname(names, hostname)
+    return matchesHostname(names, hostname, allowed)
 end
 
 local function trustedCA(self)
@@ -75,11 +84,12 @@ local function trustedCA(self)
     end
 end
 
-function SecureHTTP:request(url, method, headers, body, timeout)
+local function perform(self, policy, url, method, headers, body, timeout)
     if type(url) ~= "string" or url:find("[%c%s\\#]") then return failure("invalid_url") end
     local host, path = url:match("^https://([a-z0-9%.%-]+)(/.*)$")
-    if not allowed[host] or not path then return failure("invalid_url") end
+    if not policy.hosts[host] or not path then return failure("invalid_url") end
     method = method or "POST"
+    if policy.public and (method ~= "GET" or body ~= nil) then return failure("invalid_request") end
     if method ~= "POST" and method ~= "GET" then return failure("invalid_request") end
     if body ~= nil and type(body) ~= "string" then return failure("invalid_request") end
     if headers ~= nil and type(headers) ~= "table" then return failure("invalid_request") end
@@ -88,6 +98,9 @@ function SecureHTTP:request(url, method, headers, body, timeout)
         if type(key) ~= "string" or not key:match("^[%w%-]+$") or type(value) ~= "string"
             or value:find("[%c]") then return failure("invalid_request") end
         local lower = key:lower()
+        if policy.public and (lower == "authorization" or lower == "cookie") then
+            return failure("invalid_request")
+        end
         if lower == "host" or lower == "proxy-authorization" or lower == "connection"
             or lower == "transfer-encoding" or lower == "content-length" then
             return failure("invalid_request")
@@ -166,7 +179,7 @@ function SecureHTTP:request(url, method, headers, body, timeout)
             if not cert or type(cert.extensions) ~= "function" then abort("tls_unavailable") end
             local extensions = cert:extensions()
             local san = extensions and extensions["2.5.29.17"]
-            if not SecureHTTP:matchesHostname(san and san.dNSName, host) then abort("tls_failed") end
+            if not matchesHostname(san and san.dNSName, host, policy.hosts) then abort("tls_failed") end
             verified = true
             return 1
         end
@@ -191,7 +204,7 @@ function SecureHTTP:request(url, method, headers, body, timeout)
             if (deps.socket.gettime or os.time)() - started > timeout then return nil, "timeout" end
             if chunk then
                 size = size + #chunk
-                if size > 16 * 1024 * 1024 then return nil, "response too large" end
+                if size > policy.max_bytes then return nil, "response too large" end
                 chunks[#chunks + 1] = chunk
             end
             return 1
@@ -204,6 +217,16 @@ function SecureHTTP:request(url, method, headers, body, timeout)
     if not status then return failure("network_error") end
     if status >= 300 and status < 400 then return failure("redirect_rejected") end
     return true, status, table.concat(chunks), response_headers or {}
+end
+
+function SecureHTTP:request(url, method, headers, body, timeout)
+    return perform(self, AUTH_POLICY, url, method, headers, body, timeout)
+end
+
+-- Updater-only: unauthenticated GET to public GitHub hosts. Credentials are
+-- rejected, not stripped, so a caller bug fails loudly instead of leaking.
+function SecureHTTP:requestPublic(url, headers, timeout)
+    return perform(self, UPDATE_POLICY, url, "GET", headers, nil, timeout)
 end
 
 return SecureHTTP

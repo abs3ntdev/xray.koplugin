@@ -3355,7 +3355,7 @@ function M:showAbout()
                 callback = function()
                     UIManager:close(about_dlg)
                     local updater = require(plugin_path .. "xray_updater")
-                    updater.checkForUpdates(self.loc, self.ai_helper.settings.beta_channel_enabled)
+                    updater.checkForUpdates(self.loc)
                 end,
             },
         }},
@@ -6247,26 +6247,6 @@ function M:showUnitConversionDirectionSettings()
             if self.scanBookForUnits then self:scanBookForUnits() end
         end,
         about_text = self.loc:t("unit_conv_direction_about") or "Unit conversion direction determines how measurements in books (e.g. lengths, weight, temperatures) are translated:\n\n• [B]Auto (Follow Device):[/B] Automatically converts based on the 'Dimension units' system setting of your device.\n• [B]To Metric:[/B] Always converts Imperial units (e.g. miles, Fahrenheit) to Metric equivalents (e.g. kilometers, Celsius).\n• [B]To Imperial:[/B] Always converts Metric units to Imperial equivalents.",
-    })
-end
-
-function M:showBetaChannelSettings()
-    local enabled_text = self.loc:t("beta_enabled") or "Beta Channel Enabled"
-    local disabled_text = self.loc:t("beta_disabled") or "Stable Channel (Recommended)"
-    XRaySettingsCard.show(self, {
-        title = self.loc:t("menu_beta_channel") or "Beta Channel Settings",
-        description = self.loc:t("beta_preference_desc") or "Select your update channel preference:",
-        options = {
-            { text = enabled_text, value = true },
-            { text = disabled_text, value = false },
-        },
-        get_current_func = function()
-            return self.ai_helper.settings.beta_channel_enabled == true
-        end,
-        save_func = function(val)
-            self.ai_helper:saveSettings({ beta_channel_enabled = val })
-        end,
-        about_text = self.loc:t("beta_channel_desc") or "The beta channel allows you to receive pre-release versions of the X-Ray plugin. These versions include the latest features and bug fixes but may be [B]less stable[/B] than the regular release.",
     })
 end
 

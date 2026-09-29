@@ -296,4 +296,30 @@ describe("Verified subscription HTTP", function()
         assert.are.equal("invalid_request", code)
         assert.are.equal(connects, seen.connects)
     end)
+    -- Updater policy: public GitHub hosts only, never credentials, never
+    -- widening the subscription host set (and vice versa).
+    it("keeps the updater's public GitHub policy separate from subscription hosts", function()
+        config.names = { "*.github.com" }
+        local ok, status = HTTP:requestPublic("https://codeload.github.com/o/r/zip/abc", {}, 30)
+        assert.is_true(ok)
+        assert.are.equal(200, status)
+        assert.are.equal("GET", seen.request.method)
+        assert.is_false(seen.request.redirect)
+        assert.are.equal("codeload.github.com", seen.sni)
+
+        local connects = seen.connects
+        for _, case in ipairs({
+            { "https://auth.openai.com/oauth/token", {} },          -- auth host via public route
+            { "https://evil.github.com/x", {} },                     -- unlisted GitHub host
+            { "https://api.github.com/x", { Authorization = "Bearer FAKE-SECRET" } },
+            { "https://api.github.com/x", { Cookie = "session=FAKE" } },
+        }) do
+            local rejected = HTTP:requestPublic(case[1], case[2], 30)
+            assert.is_nil(rejected)
+        end
+        local via_auth, code = HTTP:request("https://api.github.com/x", "GET", {}, nil, 15)
+        assert.is_nil(via_auth)
+        assert.are.equal("invalid_url", code)
+        assert.are.equal(connects, seen.connects)
+    end)
 end)

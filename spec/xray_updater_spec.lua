@@ -1,178 +1,284 @@
 -- xray_updater_spec.lua
+-- Drives the public updater entry points (checkForUpdates, the update dialog
+-- buttons, checkSilentForUpdates) against a scratch plugin directory reached
+-- through a RELATIVE path, with real ZIP archives built by the host `zip` and
+-- extracted by the host `unzip`. Only the network (SecureHTTP.requestPublic)
+-- and KOReader's lfs/Trapper/DataStorage bindings are substituted.
 require("spec/spec_helper")
 
-describe("xray_updater", function()
-    local updater
-    local Device
-    local UIManager
+local SHA_A = string.rep("a", 40)
+local SHA_B = string.rep("b", 40)
+local SOURCE = "github:abs3ntdev/xray.koplugin@openai-subscription"
+local BASE = "scratch/updater_spec"           -- relative on purpose (gitignored)
+local PLUGIN = BASE .. "/plugins/xray.koplugin"
+local SETTINGS = BASE .. "/settings"
+local BUILD = BASE .. "/build"
 
-    setup(function()
-        Device = require("device")
-        UIManager = require("ui/uimanager")
-        updater = require("xray_updater")
-    end)
+local function sh(cmd) local r = os.execute(cmd); return r == 0 or r == true end
+local function q(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+local function write(path, content)
+    sh("mkdir -p " .. q(path:match("^(.*)/[^/]+$")))
+    local f = assert(io.open(path, "wb")); f:write(content); f:close()
+end
+local function read(path)
+    local f = io.open(path, "rb"); if not f then return nil end
+    local s = f:read("*a"); f:close(); return s
+end
+local function exists(path) return sh("test -e " .. q(path) .. " -o -L " .. q(path)) end
+
+local updater_source = read("xray.koplugin/xray_updater.lua")
+
+-- Builds codeload-shaped archive bytes: xray.koplugin-<sha>/{README.md,xray.koplugin/...}
+local function archive(sha, opts)
+    opts = opts or {}
+    local root = "xray.koplugin-" .. sha
+    sh("rm -rf " .. q(BUILD) .. " && mkdir -p " .. q(BUILD))
+    local files = {
+        ["README.md"] = "repo readme, outside the plugin",
+        ["spec/x_spec.lua"] = "-- repo spec, outside the plugin",
+        ["xray.koplugin/main.lua"] = "-- main " .. sha,
+        ["xray.koplugin/_meta.lua"] = "return {}",
+        ["xray.koplugin/xray_config.lua"] = "return { shipped_default = true }",
+        ["xray.koplugin/prompts/en.lua"] = "-- prompts " .. sha,
+        ["xray.koplugin/xray_updater.lua"] = opts.updater or updater_source,
+    }
+    for name, content in pairs(opts.extra or {}) do files[name] = content end
+    for name, content in pairs(files) do write(BUILD .. "/" .. root .. "/" .. name, content) end
+    if opts.prepare then opts.prepare(BUILD .. "/" .. root) end
+    assert(sh("cd " .. q(BUILD) .. " && zip -q -r -y -X out.zip " .. q(root)))
+    local bytes = read(BUILD .. "/out.zip")
+    if opts.mutate then bytes = opts.mutate(bytes) end
+    return bytes
+end
+
+describe("xray_updater (fork branch)", function()
+    local updater, net, saved, UIManager
+
+    local function install_mocks()
+        saved = {
+            http = package.loaded["xray_secure_http"], ds = package.loaded["datastorage"],
+            lfs = package.loaded["libs/libkoreader-lfs"], trapper = package.loaded["ui/trapper"],
+        }
+        package.loaded["xray_secure_http"] = {
+            requestPublic = function(_, url, headers)
+                net.calls[#net.calls + 1] = { url = url, headers = headers }
+                if net.fail then return nil, "network_error" end
+                if url:find("^https://api%.github%.com/") then return true, 200, net.head .. "\n", {} end
+                if url == "https://codeload.github.com/abs3ntdev/xray.koplugin/zip/" .. net.head then
+                    return true, 200, net.zip, {}
+                end
+                return true, 404, "", {}
+            end,
+        }
+        package.loaded["datastorage"] = { getSettingsDir = function() return SETTINGS end }
+        -- Real filesystem answers for the lfs calls the installer makes.
+        package.loaded["libs/libkoreader-lfs"] = {
+            symlinkattributes = function(p)
+                if sh("test -L " .. q(p)) then return { mode = "link" } end
+                if sh("test -d " .. q(p)) then return { mode = "directory" } end
+                if sh("test -f " .. q(p)) then return { mode = "file" } end
+            end,
+            mkdir = function(p) return sh("mkdir " .. q(p)) end,
+            rmdir = function(p) return sh("rmdir " .. q(p) .. " 2>/dev/null") end,
+            dir = function(p)
+                local h = io.popen("ls -a1 " .. q(p)); local lines = {}
+                for l in h:lines() do lines[#lines + 1] = l end
+                h:close(); local i = 0
+                return function() i = i + 1; return lines[i] end
+            end,
+        }
+        -- KOReader signature: (task, trap_widget) -> completed, result
+        package.loaded["ui/trapper"] = {
+            dismissableRunInSubprocess = function(_, task) return true, task() end,
+        }
+    end
 
     before_each(function()
+        UIManager = require("ui/uimanager")
+        UIManager.restartKOReader = function() end
         _G.ui_tracker.shown = {}
-        _G.ui_tracker.last_shown = nil
-        _G.ui_tracker.closed = {}
-        Device.screen.getHeight = function() return 800 end
-        Device.screen.getWidth = function() return 600 end
+        sh("rm -rf " .. q(BASE) .. " && mkdir -p " .. q(PLUGIN) .. " " .. q(SETTINGS))
+        write(PLUGIN .. "/xray_updater.lua", updater_source)
+        write(PLUGIN .. "/main.lua", "-- old main")
+        write(PLUGIN .. "/xray_config.lua", "return { gemini_api_key = 'SENTINEL-KEY' }")
+        write(PLUGIN .. "/user_notes.txt", "user data")
+        net = { head = SHA_A, calls = {} }
+        install_mocks()
+        updater = dofile(PLUGIN .. "/xray_updater.lua")
     end)
 
-    describe("_cleanReleaseNotes", function()
-        it("should strip markdown links to plain text", function()
-            local raw = "Fixed bug in ([115](https://github.com/ultimatejimmy/xray.koplugin/issues/115))."
-            local cleaned = updater._cleanReleaseNotes(raw)
-            assert.are.equal("Fixed bug in (115).", cleaned)
-        end)
-
-        it("should strip headers, bold, italics, and backticks", function()
-            local raw = "## What's New\n**Feature:** `fast_mode` enabled *now*."
-            local cleaned = updater._cleanReleaseNotes(raw)
-            assert.are.equal("What's New\nFeature: fast_mode enabled now.", cleaned)
-        end)
-
-        it("should collapse multiple consecutive newlines", function()
-            local raw = "Line 1\n\n\n\n\nLine 2"
-            local cleaned = updater._cleanReleaseNotes(raw)
-            assert.are.equal("Line 1\n\nLine 2", cleaned)
-        end)
+    after_each(function()
+        package.loaded["xray_secure_http"] = saved.http
+        package.loaded["datastorage"] = saved.ds
+        package.loaded["libs/libkoreader-lfs"] = saved.lfs
+        package.loaded["ui/trapper"] = saved.trapper
+        sh("rm -rf " .. q(BASE))
     end)
 
-    describe("_formatInlineNotes", function()
-        it("should return nil and false when notes are nil or empty", function()
-            local preview, has_more = updater._formatInlineNotes(nil, 800)
-            assert.is_nil(preview)
-            assert.is_false(has_more)
+    local function last() return _G.ui_tracker.shown[#_G.ui_tracker.shown] end
+    local function text(w) return w.title or (w.args and w.args.text) or "" end
+    local function press_install()
+        local dlg = last()
+        assert.are.equal("ButtonDialog", dlg.type)
+        dlg.buttons[1][2].callback()
+    end
+    local function unchanged()
+        assert.are.equal("-- old main", read(PLUGIN .. "/main.lua"))
+        assert.is_false(exists(PLUGIN .. "/.xray_fork_commit"))
+        assert.is_false(exists(PLUGIN .. "/prompts"))
+        assert.is_false(exists(SETTINGS .. "/xray_update_stage"))
+    end
 
-            local preview2, has_more2 = updater._formatInlineNotes("", 800)
-            assert.is_nil(preview2)
-            assert.is_false(has_more2)
-        end)
+    it("installs the exact branch head plugin subtree and then reports up to date", function()
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        local prompt = text(last())
+        assert.truthy(prompt:find("unknown", 1, true))
+        assert.truthy(prompt:find("abs3ntdev/xray.koplugin (openai-subscription)", 1, true))
+        press_install()
 
-        it("should strip redundant What's New title line", function()
-            local raw = "What's New:\n- Feature 1\n- Feature 2"
-            local preview, has_more = updater._formatInlineNotes(raw, 800)
-            assert.is_false(has_more)
-            assert.are.equal("- Feature 1\n- Feature 2", preview)
-        end)
+        assert.are.equal("-- main " .. SHA_A, read(PLUGIN .. "/main.lua"))
+        assert.are.equal("-- prompts " .. SHA_A, read(PLUGIN .. "/prompts/en.lua"))
+        assert.are.equal("return { gemini_api_key = 'SENTINEL-KEY' }", read(PLUGIN .. "/xray_config.lua"))
+        assert.are.equal("user data", read(PLUGIN .. "/user_notes.txt"))
+        assert.is_false(exists(PLUGIN .. "/README.md"))
+        assert.is_false(exists(PLUGIN .. "/main.lua.xray-bak"))
+        assert.is_false(exists(SETTINGS .. "/xray_update_stage"))
+        assert.are.equal("source=" .. SOURCE .. "\ncommit=" .. SHA_A .. "\n", read(PLUGIN .. "/.xray_fork_commit"))
+        assert.are.equal("https://codeload.github.com/abs3ntdev/xray.koplugin/zip/" .. SHA_A, net.calls[2].url)
+        for _, c in ipairs(net.calls) do
+            for k in pairs(c.headers) do assert.are_not.equal("authorization", k:lower()) end
+        end
 
-        it("should truncate long multi-line notes on 600px screen height", function()
-            local raw = "- Point 1: Added a long description here\n" ..
-                        "- Point 2: Another detailed change description\n" ..
-                        "- Point 3: A third feature was added\n" ..
-                        "- Point 4: Fourth change\n" ..
-                        "- Point 5: Fifth change"
-            local preview, has_more = updater._formatInlineNotes(raw, 600)
-            assert.is_true(has_more)
-            -- On 600px screen, max_lines is 3 and max_chars is 140
-            local line_count = 0
-            for _ in preview:gmatch("([^\n]+)") do
-                line_count = line_count + 1
-            end
-            assert.is_true(line_count <= 4)
-            assert.is_true(preview:find("%.%.%.$") ~= nil)
-        end)
+        updater = dofile(PLUGIN .. "/xray_updater.lua")
+        updater.checkForUpdates(nil)
+        assert.are.equal("InfoMessage", last().type)
+        assert.truthy(text(last()):find("up to date", 1, true))
 
-        it("should keep short notes intact without truncation", function()
-            local raw = "- Fix dictionary crash"
-            local preview, has_more = updater._formatInlineNotes(raw, 800)
-            assert.is_false(has_more)
-            assert.are.equal("- Fix dictionary crash", preview)
-        end)
+        -- A newer head is offered with both commits named.
+        net.head = SHA_B
+        updater.checkForUpdates(nil)
+        assert.truthy(text(last()):find("aaaaaaa", 1, true))
+        assert.truthy(text(last()):find("bbbbbbb", 1, true))
     end)
 
-    describe("_showUpdateDialog", function()
-        it("shows up-to-date toast instead of update dialog when version is current", function()
-            updater._showUpdateDialog({ version = "1.0.0" }, "1.0.0")
-            local w = _G.ui_tracker.last_shown
-            assert.is_not_nil(w)
-            assert.are.equal("InfoMessage", w.type)
-        end)
-
-        it("should display a ButtonDialog with 1 button row when notes are short", function()
-            local release = {
-                version = "2.0.0",
-                download_url = "https://example.com/download.zip",
-                notes = "- Bug fix",
-            }
-            updater._showUpdateDialog(release, "1.0.0")
-            local dlg = _G.ui_tracker.last_shown
-            assert.are.equal("ButtonDialog", dlg.type)
-            -- 1 row of buttons: Cancel, Download
-            assert.are.equal(1, #dlg.buttons)
-            assert.are.equal(2, #dlg.buttons[1])
-            assert.are.equal("updater_btn_cancel", dlg.buttons[1][1].text)
-            assert.are.equal("updater_btn_download", dlg.buttons[1][2].text)
-            assert.is_true(dlg.buttons[1][2].is_enter_default)
-        end)
-
-        it("should display a ButtonDialog with 2 button rows when notes are long", function()
-            local long_notes = ""
-            for i = 1, 10 do
-                long_notes = long_notes .. "- Long bullet item number " .. i .. " describing an update\n"
+    it("installs a GitHub-style archive with MS-DOS entry attributes", function()
+        -- codeload.github.com writes host=0 (FAT) attributes; rewrite ours so.
+        net.zip = archive(SHA_A, { mutate = function(b)
+            local out, i = {}, 1
+            while true do
+                local j = b:find("PK\1\2", i, true)
+                if not j then break end
+                local nlen = b:byte(j + 28) + b:byte(j + 29) * 256
+                local is_dir = b:sub(j + 45 + nlen, j + 45 + nlen) == "/"
+                out[#out + 1] = b:sub(i, j + 4) .. "\0"                    -- version made by: host 0
+                out[#out + 1] = b:sub(j + 6, j + 37)
+                out[#out + 1] = (is_dir and "\16" or "\0") .. "\0\0\0"     -- external attributes
+                i = j + 42
             end
-            local release = {
-                version = "2.0.0",
-                download_url = "https://example.com/download.zip",
-                notes = long_notes,
-            }
-            updater._showUpdateDialog(release, "1.0.0")
-            local dlg = _G.ui_tracker.last_shown
-            assert.are.equal("ButtonDialog", dlg.type)
-            -- Row 1: View full release notes
-            -- Row 2: Cancel, Download
-            assert.are.equal(2, #dlg.buttons)
-            assert.are.equal(1, #dlg.buttons[1])
-            assert.are.equal("View full release notes", dlg.buttons[1][1].text)
-            assert.are.equal(2, #dlg.buttons[2])
-            assert.are.equal("updater_btn_cancel", dlg.buttons[2][1].text)
-            assert.are.equal("updater_btn_download", dlg.buttons[2][2].text)
+            out[#out + 1] = b:sub(i)
+            return table.concat(out)
+        end })
+        updater.checkForUpdates(nil)
+        press_install()
+        assert.are.equal("-- main " .. SHA_A, read(PLUGIN .. "/main.lua"))
+        assert.are.equal("return { gemini_api_key = 'SENTINEL-KEY' }", read(PLUGIN .. "/xray_config.lua"))
+        assert.truthy(read(PLUGIN .. "/.xray_fork_commit"))
+    end)
 
-            -- Clicking 'View full release notes' should open a TextViewer
-            dlg.buttons[1][1].callback()
-            local viewer = _G.ui_tracker.last_shown
-            assert.are.equal("TextViewer", viewer.type)
-            assert.are.equal(long_notes, viewer.args.text)
-            -- TextViewer has Back and Download buttons
-            assert.are.equal(1, #viewer.args.buttons_table)
-            assert.are.equal(2, #viewer.args.buttons_table[1])
-            assert.are.equal("Back", viewer.args.buttons_table[1][1].text)
-            assert.are.equal("updater_btn_download", viewer.args.buttons_table[1][2].text)
-        end)
+    it("treats a marker from another source as unknown, never up to date", function()
+        write(PLUGIN .. "/.xray_fork_commit", "source=github:ultimatejimmy/xray.koplugin@main\ncommit=" .. SHA_A .. "\n")
+        updater.checkForUpdates(nil)
+        assert.are.equal("ButtonDialog", last().type)
+        assert.truthy(text(last()):find("unknown", 1, true))
+    end)
 
-        it("should configure no_asset_dlg with view notes and open browser when download_url is missing", function()
-            local long_notes = ""
-            for i = 1, 10 do
-                long_notes = long_notes .. "- Long bullet item number " .. i .. "\n"
+    it("reports a failed check truthfully and changes nothing", function()
+        net.fail = true
+        updater.checkForUpdates(nil)
+        assert.are.equal("InfoMessage", last().type)
+        assert.truthy(text(last()):find("network_error", 1, true))
+        unchanged()
+    end)
+
+    it("weekly check prompts only for a known older build and never installs", function()
+        updater.checkSilentForUpdates(nil)          -- unknown installed build: silent
+        assert.are.equal(0, #_G.ui_tracker.shown)
+        write(PLUGIN .. "/.xray_fork_commit", "source=" .. SOURCE .. "\ncommit=" .. SHA_B .. "\n")
+        updater.checkSilentForUpdates(nil)
+        assert.are.equal("ButtonDialog", last().type)
+        for _, c in ipairs(net.calls) do            -- metadata only, no archive download
+            assert.truthy(c.url:find("^https://api%.github%.com/"))
+        end
+        assert.are.equal("-- old main", read(PLUGIN .. "/main.lua"))
+    end)
+
+    it("refuses a published build without the fork updater capability", function()
+        net.zip = archive(SHA_A, { updater = "-- legacy release updater" })
+        updater.checkForUpdates(nil)
+        press_install()
+        assert.truthy(text(last()):find("does not support the fork updater", 1, true))
+        unchanged()
+    end)
+
+    -- Each archive is unsafe somewhere; none may touch the plugin directory.
+    local unsafe = {
+        { "symlink entry outside the plugin subtree", { prepare = function(root)
+            sh("ln -s /etc/passwd " .. q(root .. "/docs_link"))
+        end }, "non-regular archive entry" },
+        { "symlink entry inside the plugin subtree", { prepare = function(root)
+            sh("ln -s ../../../etc " .. q(root .. "/xray.koplugin/evil"))
+        end }, "non-regular archive entry" },
+        { "parent-directory traversal", { extra = { ["xray.koplugin/zz/x.lua"] = "x" },
+            mutate = function(b) return (b:gsub("/zz/", "/../")) end }, "unsafe archive path" },
+        { "glob and shell metacharacters in a name", { extra = { ["xray.koplugin/a*b$(x).lua"] = "x" } }, "unsafe archive path" },
+        { "an unexpected archive root", { mutate = function(b)
+            return (b:gsub("xray%.koplugin%-" .. SHA_A, "xray.koplugin-" .. SHA_B))
+        end }, "unexpected archive root" },
+        { "extracted bytes that do not match the declared CRC", { mutate = function(b)
+            -- corrupt main.lua CRC in the central directory only
+            local name = "xray.koplugin-" .. SHA_A .. "/xray.koplugin/main.lua"
+            local i = b:find("PK\1\2", 1, true)
+            while i do
+                if b:sub(i + 46, i + 45 + #name) == name then
+                    return b:sub(1, i + 15) .. "\0\0\0\0" .. b:sub(i + 20)
+                end
+                i = b:find("PK\1\2", i + 1, true)
             end
-            local release = {
-                version = "2.0.0",
-                download_url = nil,
-                notes = long_notes,
-                html_url = "https://github.com/ultimatejimmy/xray.koplugin/releases/tag/2.0.0",
-            }
-            updater._showUpdateDialog(release, "1.0.0")
-            local dlg = _G.ui_tracker.last_shown
-            assert.are.equal("ButtonDialog", dlg.type)
-            assert.are.equal(2, #dlg.buttons)
-            assert.are.equal("View full release notes", dlg.buttons[1][1].text)
-            assert.are.equal("updater_btn_cancel", dlg.buttons[2][1].text)
-            assert.are.equal("updater_btn_open_browser", dlg.buttons[2][2].text)
+            error("entry not found")
+        end }, "extracted data mismatch" },
+    }
+    for _, case in ipairs(unsafe) do
+        it("rejects an archive with " .. case[1] .. " before touching the plugin", function()
+            net.zip = archive(SHA_A, case[2])
+            updater.checkForUpdates(nil)
+            press_install()
+            assert.truthy(text(last()):find(case[3], 1, true))
+            unchanged()
         end)
+    end
 
-        it("should set compact info_face on small/landscape screen height (< 700)", function()
-            Device.screen.getHeight = function() return 600 end
-            local release = {
-                version = "2.0.0",
-                download_url = "https://example.com/download.zip",
-                notes = "- Bug fix",
-            }
-            updater._showUpdateDialog(release, "1.0.0")
-            local dlg = _G.ui_tracker.last_shown
-            assert.are.equal("ButtonDialog", dlg.type)
-            assert.is_not_nil(dlg.info_face)
-        end)
+    it("rolls back every replaced file when a later file cannot be placed", function()
+        write(PLUGIN .. "/_meta.lua", "-- old meta")
+        sh("mkdir -p " .. q(PLUGIN .. "/prompts/en.lua"))   -- directory where a file must go
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        press_install()
+        assert.truthy(text(last()):find("could not install", 1, true))
+        assert.are.equal("-- old main", read(PLUGIN .. "/main.lua"))
+        assert.are.equal("-- old meta", read(PLUGIN .. "/_meta.lua"))
+        assert.are.equal(updater_source, read(PLUGIN .. "/xray_updater.lua"))
+        assert.are.equal("return { gemini_api_key = 'SENTINEL-KEY' }", read(PLUGIN .. "/xray_config.lua"))
+        assert.is_false(exists(PLUGIN .. "/.xray_fork_commit"))
+        assert.is_false(exists(PLUGIN .. "/main.lua.xray-bak"))
+    end)
+
+    it("refuses to install through a symlinked plugin directory", function()
+        sh("mv " .. q(PLUGIN) .. " " .. q(BASE .. "/real") .. " && ln -s ../real " .. q(PLUGIN))
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        press_install()
+        assert.truthy(text(last()):find("not a plain directory", 1, true))
+        assert.are.equal("-- old main", read(BASE .. "/real/main.lua"))
     end)
 end)

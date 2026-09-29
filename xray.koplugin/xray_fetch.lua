@@ -2124,7 +2124,7 @@ function M:checkWeeklyUpdate()
             self:log("XRayPlugin: Triggering weekly silent update check")
             self.ai_helper:saveSettings({ last_update_check = now })
             local updater = require(plugin_path .. "xray_updater")
-            updater.checkSilentForUpdates(self.loc, self.ai_helper.settings.beta_channel_enabled)
+            updater.checkSilentForUpdates(self.loc)
         else
             self:log("XRayPlugin: Skipping weekly update check (offline)")
         end
