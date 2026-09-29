@@ -228,7 +228,7 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
         local ok, code, resp_text = httpRequest(create_url, "POST", { ["Content-Type"] = "application/json" }, "{}", 6)
 
         if not ok or code ~= 200 or not resp_text then
-            logErr("WebSetup: Failed to create session on worker (" .. tostring(code) .. "): " .. tostring(resp_text))
+            logErr("WebSetup: Failed to create session on worker (" .. tostring(code) .. "), response " .. tostring(type(resp_text) == "string" and #resp_text or 0) .. " bytes")
             local msg = "Could not reach Cloud Relay (" .. tostring(code or "Network error") .. "). Check your Wi-Fi connection."
             if self:isLocalServerSupported() then
                 msg = "Could not reach Cloud Relay (" .. tostring(code or "Network error") .. "). Check your Wi-Fi or try Local Wi-Fi mode."
@@ -243,7 +243,7 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
         local sess_data
         pcall(function() sess_data = json.decode(resp_text) end)
         if not sess_data or not sess_data.session_id then
-            logErr("WebSetup: Invalid response payload from worker: " .. tostring(resp_text))
+            logErr("WebSetup: Invalid response payload from worker (" .. tostring(type(resp_text) == "string" and #resp_text or 0) .. " bytes)")
             UIManager:show(InfoMessage:new{ text = "Invalid response from Cloud Relay.", timeout = 4 })
             return false
         end
@@ -439,14 +439,14 @@ function WebSetup:pollCloudRelay(worker_url, session_id, secret_hex)
                         self:applyReceivedKey(payload_obj)
                         return
                     else
-                        logErr("WebSetup: Decrypted JSON missing api_key: " .. tostring(decrypted_json))
+                        logErr("WebSetup: Decrypted payload invalid or missing api_key")
                     end
                 else
                     logErr("WebSetup: Decryption failed: " .. tostring(err))
                 end
             end
         elseif not ok or (code ~= 204 and code ~= 200) then
-            logWarn("WebSetup: Poll non-success status: " .. tostring(code) .. ", resp: " .. tostring(resp_text))
+            logWarn("WebSetup: Poll non-success status: " .. tostring(code) .. ", response " .. tostring(type(resp_text) == "string" and #resp_text or 0) .. " bytes")
         end
 
         -- Schedule next poll

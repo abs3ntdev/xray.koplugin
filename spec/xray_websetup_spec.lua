@@ -93,4 +93,51 @@ describe("xray_websetup", function()
 
         Device.isKindle = orig_isKindle
     end)
+    it("never logs decrypted payload or raw relay responses", function()
+        local logger = package.loaded["xray_logger"]
+        local Crypto = require("xray_crypto")
+        local https = package.loaded["ssl.https"]
+        local secret = "sk-supersecret-relay-value-123"
+        local lines = {}
+        local saved = { err = logger.err, warn = logger.warn, info = logger.info,
+            decrypt = Crypto.decryptPayload, req = https.request }
+        local function capture(msg)
+            table.insert(lines, tostring(msg))
+            WebSetup.is_running = false -- stop the synchronous poll loop
+        end
+        logger.err = capture
+        logger.warn = capture
+        logger.info = function(msg) table.insert(lines, tostring(msg)) end
+        Crypto.decryptPayload = function() return '{"not_api_key":"' .. secret .. '"}' end
+        https.request = function(req)
+            req.sink('{"status":"ready","payload":"' .. secret .. '"}')
+            return 1, 200, {}, "HTTP/1.1 200 OK"
+        end
+
+        local ok, err = pcall(function()
+            WebSetup.is_running = true
+            WebSetup.session_id = "sess"
+            WebSetup.poll_start_time = os.time()
+            WebSetup:pollCloudRelay("https://relay.example", "sess", "00")
+
+            https.request = function(req)
+                req.sink('{"error":"' .. secret .. '"}')
+                return 1, 500, {}, "HTTP/1.1 500"
+            end
+            WebSetup.is_running = true
+            WebSetup:pollCloudRelay("https://relay.example", "sess", "00")
+        end)
+
+        logger.err, logger.warn, logger.info = saved.err, saved.warn, saved.info
+        Crypto.decryptPayload = saved.decrypt
+        https.request = saved.req
+        WebSetup.is_running = false
+        WebSetup.session_id = nil
+        assert.is_true(ok, tostring(err))
+
+        assert.is_true(#lines >= 2)
+        for _, line in ipairs(lines) do
+            assert.is_nil(line:find(secret, 1, true))
+        end
+    end)
 end)
