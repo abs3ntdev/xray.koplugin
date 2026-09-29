@@ -37,7 +37,7 @@ local Messages = {}
 Messages.PROVIDER_ID = "anthropic_account"
 Messages.DEFAULT_MODEL = "claude-sonnet-5"
 -- Real Claude IDs from jcode ALL_CLAUDE_MODELS (02777ce1) that X-Ray offers.
-Messages.MODELS = { "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5" }
+Messages.MODELS = { "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-4-5" }
 -- Pinned endpoint. Never substituted by custom endpoint settings.
 Messages.ENDPOINT = "https://api.anthropic.com/v1/messages?beta=true"
 Messages.API_VERSION = "2023-06-01"

@@ -71,6 +71,33 @@ describe("xray_ui", function()
         end)
     end)
 
+    describe("Claude subscription picker", function()
+        it("offers claude-sonnet-5-5 and selects it via callback", function()
+            local chosen
+            local finally_restore
+            local old_a = package.loaded["xray_anthropic_auth"]
+            package.loaded["xray_anthropic_auth"] = { getStatus = function() return { connected = true } end }
+            finally_restore = function() package.loaded["xray_anthropic_auth"] = old_a end
+            plugin.ai_helper.setUnifiedModel = function(_, kind, provider, model)
+                chosen = { kind, provider, model }
+            end
+            local sub
+            for _, item in ipairs(plugin:getAIModelSelectionMenu("primary")) do
+                if item.text == "Claude subscription (experimental)" then sub = item end
+            end
+            assert.is_not_nil(sub)
+            local models = sub.sub_item_table_func()
+            local found
+            for _, m in ipairs(models) do
+                if m.text:find("claude-sonnet-5-5", 1, true) then found = m end
+            end
+            assert.is_not_nil(found)
+            found.callback()
+            finally_restore()
+            assert.are.same({ "primary", "anthropic_account", "claude-sonnet-5-5" }, chosen)
+        end)
+    end)
+
     describe("showLanguageSelection", function()
         it("should show a Menu with language options and correctly marked default checkbox", function()
             plugin:showLanguageSelection()

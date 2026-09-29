@@ -131,6 +131,12 @@ describe("AIHelper anthropic_account provider", function()
             assert.are.equal(0, oauth.calls.context)
         end)
 
+        it("forwards claude-sonnet-5-5 unchanged without fallback", function()
+            AIHelper.settings.primary_ai = { provider = "anthropic_account", model = "claude-sonnet-5-5" }
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
+            assert.are.equal("claude-sonnet-5-5", json.decode(reqs[1].body).model)
+        end)
+
         it("ignores a custom endpoint configured on the provider", function()
             AIHelper.providers.anthropic_account.endpoint = "https://evil.example"
             local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "p")
