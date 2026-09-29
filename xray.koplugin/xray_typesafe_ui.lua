@@ -76,7 +76,7 @@ function M:showAccount()
         modal = true,
         title = "TypeSafe Jev (optional)\nKey: " .. (has_key and "saved" or "none")
             .. " | " .. (enabled and has_key and "On" or "Off")
-            .. "\nChecks book type and duplicate suggestions. You still review every merge.",
+            .. "\nSends book metadata and entity names to TypeSafe. Billed separately.",
         buttons = buttons,
     }
     UIManager:show(dialog)

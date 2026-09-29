@@ -21,7 +21,16 @@ generative AI provider.
   as `not assessed`.
 
 Confidence describes how concentrated Jev's answer is, not whether it is
-correct. Accuracy on your books has not been measured.
+correct. The API guarantees answer types, not accuracy. The thresholds above
+are conservative heuristics, not calibrated or validated for books or
+literary name matching.
+
+## Privacy and billing
+
+Turning this on sends book metadata (title, author, series, description) and
+candidate entity names, aliases and short descriptions to TypeSafe, a third
+party. TypeSafe usage is billed to your TypeSafe account, in addition to your
+normal AI provider.
 
 ## Setup
 

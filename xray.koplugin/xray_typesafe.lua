@@ -19,7 +19,7 @@ local TS = {}
 TS.PROVIDER_ID = "typesafe"
 TS.ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 -- Pinned versioned model (models.md). Aliases like jev-latest can move and
--- change answers; thresholds below were chosen against this version's docs.
+-- change answers without notice.
 TS.MODEL = "jev-1.13.0"
 TS.TIMEOUT = 20
 TS.MAX_REQUEST_BYTES = 48 * 1024
@@ -40,6 +40,9 @@ TS.BOOK_TYPES = {
     textbook = "Textbooks, academic course material or technical manuals.",
     travel = "Travel guides.",
 }
+-- Conservative heuristic thresholds. NOT calibrated or validated for book
+-- metadata or literary entity matching. The API guarantees answer types, not
+-- accuracy; anything below these falls back to existing behavior.
 TS.BOOK_TYPE_MIN_PROBABILITY = 0.8
 TS.BOOK_TYPE_MIN_CONFIDENCE = 0.7
 TS.PAIR_MIN_CONFIDENCE = 0.6
