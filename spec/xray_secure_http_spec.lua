@@ -248,6 +248,29 @@ describe("Verified subscription HTTP", function()
         assert.is_nil(ok)
         assert.are.equal("tls_failed", code)
     end)
+    it("allows only the exact pinned setup relay host with verified TLS", function()
+        local relay = "xray-setup.ultimatejimmy.workers.dev"
+        config.names = { "*.ultimatejimmy.workers.dev" }
+        local ok, status = request("https://" .. relay .. "/api/session/AB12CD/poll")
+        assert.is_true(ok)
+        assert.are.equal(200, status)
+        assert.are.equal(relay, seen.sni)
+        assert.are.equal("peer", seen.options.verify)
+        config.names = { "*.workers.dev" }
+        local bad, code = request("https://" .. relay .. "/api/session/create")
+        assert.is_nil(bad)
+        assert.are.equal("tls_failed", code)
+        local connects = seen.connects
+        for _, url in ipairs({ "https://evil.ultimatejimmy.workers.dev/", "https://ultimatejimmy.workers.dev/",
+            "https://x.xray-setup.ultimatejimmy.workers.dev/", "https://xray-setup.ultimatejimmy.workers.dev.evil/",
+            "http://" .. relay .. "/", "https://" .. relay .. ":443/", "https://" .. relay .. "/#secret",
+            "https://XRAY-SETUP.ultimatejimmy.workers.dev/", "https://" .. relay }) do
+            local denied, reason = request(url)
+            assert.is_nil(denied)
+            assert.are.equal("invalid_url", reason)
+        end
+        assert.are.equal(connects, seen.connects)
+    end)
     it("rejects unpinned Anthropic and Claude hosts before connecting", function()
         local connects = seen.connects
         for _, url in ipairs({ "https://claude.com/cai/oauth/authorize", "https://claude.ai/",

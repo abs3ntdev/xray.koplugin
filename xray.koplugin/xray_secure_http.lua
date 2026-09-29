@@ -12,9 +12,13 @@ local bundled_ca = plugin_directory and plugin_directory .. "certs/ca-bundle.crt
 -- Exact subscription hosts only. Anthropic hosts pinned from Jcode commit
 -- 02777ce1bea392f03af4eda48c5292bb48946646 (auth/oauth.rs TOKEN_URL and the
 -- anthropic provider Messages endpoint). No wildcard or speculative hosts.
+-- The setup relay host is the one pinned, deployed X-Ray pairing relay. It only
+-- ever carries end-to-end encrypted, fragment-keyed ciphertext (never tokens or
+-- bearer headers); see xray_code_transfer.lua. It is not user-configurable.
 local allowed = {
     ["auth.openai.com"] = true, ["chatgpt.com"] = true,
     ["platform.claude.com"] = true, ["api.anthropic.com"] = true,
+    ["xray-setup.ultimatejimmy.workers.dev"] = true,
 }
 local messages = {
     invalid_url = "Only official subscription HTTPS endpoints are allowed.",
@@ -71,7 +75,7 @@ end
 
 function SecureHTTP:request(url, method, headers, body, timeout)
     if type(url) ~= "string" or url:find("[%c%s\\#]") then return failure("invalid_url") end
-    local host, path = url:match("^https://([a-z%.]+)(/.*)$")
+    local host, path = url:match("^https://([a-z0-9%.%-]+)(/.*)$")
     if not allowed[host] or not path then return failure("invalid_url") end
     method = method or "POST"
     if method ~= "POST" and method ~= "GET" then return failure("invalid_request") end
