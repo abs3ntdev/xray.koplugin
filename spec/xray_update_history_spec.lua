@@ -40,6 +40,13 @@ describe("xray_update_history", function()
         assert.is_nil(io.open(path .. ".tmp", "rb"))
     end)
 
+    it("persists cache_saved = false and formats it after reload", function()
+        History.new(path):record({ ts = 100, op = "update", outcome = "failed", error_code = "error_save", cache_saved = false })
+        local list = History.new(path):load()
+        assert.are.equal(false, list[1].cache_saved)
+        assert.is_truthy(History.format(list):find("cache not saved", 1, true))
+    end)
+
     it("bounds the number of entries, keeping the newest", function()
         local h = History.new(path)
         for i = 1, History.MAX_ENTRIES + 15 do
@@ -193,7 +200,7 @@ describe("update history integration", function()
         local e = History.new(path):load()[1]
         assert.are.equal("failed", e.outcome)
         assert.are.equal("error_save", e.error_code)
-        assert.is_false(e.cache_saved)
+        assert.are.equal(false, e.cache_saved)
     end)
 
     it("records a merge crash as a failure", function()

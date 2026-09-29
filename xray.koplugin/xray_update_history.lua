@@ -67,8 +67,8 @@ function M.sanitizeEntry(e)
         model = type(e.model) == "string" and clip(e.model:match("^[%w_%.%-/:]+$"), M.MAX_STR) or nil,
         slot = SLOTS[e.slot] and e.slot or nil,
         error_code = sanitizeCode(e.error_code),
-        cache_saved = (type(e.cache_saved) == "boolean") and e.cache_saved or nil,
     }
+    if type(e.cache_saved) == "boolean" then out.cache_saved = e.cache_saved end
     if type(e.counts) == "table" then
         local counts = {}
         local any = false
