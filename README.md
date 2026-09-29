@@ -1,5 +1,7 @@
 # X-Ray Plugin for KOReader
 
+hello
+
 ![Platform](https://img.shields.io/badge/platform-KOReader-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 ![Status](https://img.shields.io/badge/status-active-brightgreen.svg)
@@ -46,12 +48,10 @@ For full setup instructions and a deep dive into features, check out the **[GitH
 
 ## Support me
 
-
 ## Support me
 
 [ko-fi](https://ko-fi.com/G0J627UAY9)
 
-[liberapay](https://liberapay.com/ultimatejimmy)  
+[liberapay](https://liberapay.com/ultimatejimmy)
 
 [Buy me a coffee](https://www.buymeacoffee.com/ultimatejimmy)
-
