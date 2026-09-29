@@ -47,6 +47,28 @@ describe("xray_ui", function()
             assert.are.same({ "primary", "openai_account", "gpt-6-luna" }, chosen)
             assert.is_nil(plugin.ai_helper.settings.primary_ai)
         end)
+
+        it("selects each subscription model through its own callback", function()
+            package.loaded["xray_openai_auth"].getStatus = function() return { connected = true } end
+            local chosen
+            plugin.ai_helper.setUnifiedModel = function(_, kind, provider, model)
+                chosen = { kind, provider, model }
+            end
+            local picker = plugin:getAIModelSelectionMenu("primary")
+            local subscription
+            for _, item in ipairs(picker) do
+                if item.text == "ChatGPT subscription (experimental)" then subscription = item end
+            end
+            assert.is_not_nil(subscription)
+            local models = subscription.sub_item_table_func()
+            assert.are.equal(3, #models)
+            for i, id in ipairs({ "gpt-6-luna", "gpt-6-sol", "gpt-6-astra" }) do
+                assert.truthy(models[i].text:find(id, 1, true))
+                chosen = nil
+                models[i].callback()
+                assert.are.same({ "primary", "openai_account", id }, chosen)
+            end
+        end)
     end)
 
     describe("showLanguageSelection", function()

@@ -124,6 +124,19 @@ describe("AIHelper openai_account provider", function()
             assert.is_nil(body.response_format)
         end)
 
+        it("forwards Sol and Astra unchanged without a paid fallback", function()
+            for _, model in ipairs({ "gpt-6-sol", "gpt-6-astra" }) do
+                AIHelper.settings.primary_ai.model = model
+                local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
+                assert.are.equal(1, #reqs)
+                assert.are.equal("openai_account", reqs[1].provider)
+                assert.are.equal(Responses.ENDPOINT, reqs[1].url)
+                assert.is_true(reqs[1].secure)
+                assert.are.equal(model, json.decode(reqs[1].body).model)
+                assert.are.equal(0, #generic_calls)
+            end
+        end)
+
         it("ignores a custom endpoint configured on the provider", function()
             AIHelper.providers.openai_account.endpoint = "https://evil.example/steal"
             local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")

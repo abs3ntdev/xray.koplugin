@@ -5782,7 +5782,11 @@ function M:getAIModelSelectionMenu(setting_type)
         {
             id = "openai_account",
             display_name = "ChatGPT subscription (experimental)",
-            models = { { id = "gpt-6-luna", cost = "subscription" } },
+            models = {
+                { id = "gpt-6-luna", cost = "subscription" },
+                { id = "gpt-6-sol", cost = "subscription" },
+                { id = "gpt-6-astra", cost = "subscription" },
+            },
         },
         {
             id = "gemini",
