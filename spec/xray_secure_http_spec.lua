@@ -234,4 +234,43 @@ describe("Verified subscription HTTP", function()
         assert.are.equal("network_error", code)
         assert.is_nil(message:find("FAKE-SECRET", 1, true))
     end)
+    it("allows exactly the pinned Anthropic hosts with SAN/SNI verification", function()
+        for _, host in ipairs({ "platform.claude.com", "api.anthropic.com" }) do
+            config.names = { host }
+            local ok, status = request("https://" .. host .. "/v1/messages")
+            assert.is_true(ok)
+            assert.are.equal(200, status)
+            assert.are.equal(host, seen.sni)
+            assert.are.equal("peer", seen.options.verify)
+        end
+        config.names = { "api.anthropic.com" }
+        local ok, code = request("https://platform.claude.com/v1/oauth/token")
+        assert.is_nil(ok)
+        assert.are.equal("tls_failed", code)
+    end)
+    it("rejects unpinned Anthropic and Claude hosts before connecting", function()
+        local connects = seen.connects
+        for _, url in ipairs({ "https://claude.com/cai/oauth/authorize", "https://claude.ai/",
+            "https://console.anthropic.com/", "https://anthropic.com/", "https://evil.api.anthropic.com/",
+            "https://api.anthropic.com.evil.example/", "http://api.anthropic.com/v1/messages",
+            "https://api.anthropic.com:443/v1/messages" }) do
+            local ok, code = request(url)
+            assert.is_nil(ok)
+            assert.are.equal("invalid_url", code)
+        end
+        assert.are.equal(connects, seen.connects)
+    end)
+    it("preserves a validated caller User-Agent and defaults otherwise", function()
+        request()
+        assert.are.equal("X-Ray KOReader (experimental subscription integration)",
+            seen.request.headers["user-agent"])
+        config.names = { "api.anthropic.com" }
+        HTTP:request("https://api.anthropic.com/v1/messages", "POST", { ["User-Agent"] = "claude-cli/1.0 (external, cli)" }, "{}", 15)
+        assert.are.equal("claude-cli/1.0 (external, cli)", seen.request.headers["user-agent"])
+        local connects = seen.connects
+        local ok, code = HTTP:request("https://api.anthropic.com/v1/messages", "POST", { ["User-Agent"] = "x\r\nHost: evil" }, "{}", 15)
+        assert.is_nil(ok)
+        assert.are.equal("invalid_request", code)
+        assert.are.equal(connects, seen.connects)
+    end)
 end)

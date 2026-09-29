@@ -9,15 +9,21 @@ local SecureHTTP = {}
 local source = debug.getinfo(1, "S").source
 local plugin_directory = source:match("^@(.*/)")
 local bundled_ca = plugin_directory and plugin_directory .. "certs/ca-bundle.crt"
-local allowed = { ["auth.openai.com"] = true, ["chatgpt.com"] = true }
+-- Exact subscription hosts only. Anthropic hosts pinned from Jcode commit
+-- 02777ce1bea392f03af4eda48c5292bb48946646 (auth/oauth.rs TOKEN_URL and the
+-- anthropic provider Messages endpoint). No wildcard or speculative hosts.
+local allowed = {
+    ["auth.openai.com"] = true, ["chatgpt.com"] = true,
+    ["platform.claude.com"] = true, ["api.anthropic.com"] = true,
+}
 local messages = {
-    invalid_url = "Only official OpenAI HTTPS endpoints are allowed.",
+    invalid_url = "Only official subscription HTTPS endpoints are allowed.",
     invalid_request = "The secure request was rejected.",
     tls_unavailable = "Verified TLS is unavailable. Update KOReader before signing in.",
     ca_unavailable = "A trusted CA bundle is unavailable. Update KOReader's certificates.",
     tls_failed = "The secure connection could not be verified. Check the reader's clock and CA certificates.",
     network_error = "The secure connection failed. Check connectivity and try again.",
-    redirect_rejected = "OpenAI redirected the request. No credentials were forwarded.",
+    redirect_rejected = "The service redirected the request. No credentials were forwarded.",
 }
 local function failure(code)
     return nil, code, messages[code] or messages.network_error, {}
@@ -85,7 +91,12 @@ function SecureHTTP:request(url, method, headers, body, timeout)
     safe_headers.host = host
     safe_headers.connection = "close"
     safe_headers["content-length"] = tostring(#(body or ""))
-    safe_headers["user-agent"] = "X-Ray KOReader (experimental subscription integration)"
+    -- A caller-supplied, already validated User-Agent is preserved (the
+    -- experimental Claude route pins Jcode's compatibility identity). Absent
+    -- one, the default X-Ray identity is used.
+    if not safe_headers["user-agent"] or #safe_headers["user-agent"] > 256 then
+        safe_headers["user-agent"] = "X-Ray KOReader (experimental subscription integration)"
+    end
     timeout = tonumber(timeout) or 15
     if timeout ~= timeout or timeout <= 0 or timeout > 600 then return failure("invalid_request") end
 
