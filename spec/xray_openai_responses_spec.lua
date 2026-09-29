@@ -18,6 +18,40 @@ describe("OpenAI subscription Responses adapter", function()
     end
 
     describe("buildRequest", function()
+        it("normalizes the complete Sol 6.1 effort matrix without sampling fields", function()
+            for _, case in ipairs({
+                { false, "medium" }, { "none", "low" }, { "minimal", "low" },
+                { "low", "low" }, { "medium", "medium" }, { "high", "high" },
+                { "xhigh", "xhigh" }, { "max", "max" },
+            }) do
+                local req = assert(Responses.buildRequest({
+                    model = "gpt-6.1-sol", prompt = "hello", reasoning_effort = case[1] or nil,
+                    access_token = "token", account_id = "account",
+                }))
+                local body = json.decode(req.body)
+                assert.are.equal("gpt-6.1-sol", body.model)
+                assert.are.equal(case[2], body.reasoning.effort)
+                assert.is_nil(body.temperature)
+                assert.is_nil(body.top_p)
+                assert.is_nil(body.top_logprobs)
+                assert.is_nil(body.logprobs)
+                assert.is_nil(body.response_format)
+                assert.is_nil(body.tools)
+            end
+        end)
+
+        it("preserves legacy subscription reasoning behavior", function()
+            for _, case in ipairs({ { false, false }, { "none", false }, { "max", false },
+                { "minimal", "minimal" }, { "high", "high" } }) do
+                local req = assert(Responses.buildRequest({
+                    model = "gpt-6-luna", reasoning_effort = case[1] or nil,
+                    access_token = "token", account_id = "account",
+                }))
+                local body = json.decode(req.body)
+                assert.are.equal(case[2] or nil, body.reasoning and body.reasoning.effort)
+            end
+        end)
+
         it("pins endpoint, streams, disables storage and omits chat-completion fields", function()
             local req = assert(Responses.buildRequest({
                 model = "gpt-6-luna", prompt = "hello", instructions = "JSON only",
