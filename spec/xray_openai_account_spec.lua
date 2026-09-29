@@ -113,9 +113,15 @@ describe("AIHelper openai_account provider", function()
     end)
 
     describe("async chain (buildComprehensiveRequest)", function()
-        it("subscription-primary builds only the pinned secure request", function()
+        it("subscription-primary builds the pinned secure request then the configured API secondary", function()
             local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
-            assert.are.equal(1, #reqs)
+            assert.are.equal(2, #reqs)
+            assert.are.equal("primary", reqs[1].slot)
+            assert.are.equal("gemini", reqs[2].provider)
+            assert.are.equal("secondary", reqs[2].slot)
+            assert.is_nil(reqs[2].secure)
+            assert.is_nil(reqs[2].headers["Authorization"])
+            assert.is_nil(reqs[2].body:find("tok_SECRET", 1, true))
             assert.are.equal("openai_account", reqs[1].provider)
             assert.are.equal(Responses.ENDPOINT, reqs[1].url)
             assert.is_true(reqs[1].secure)
@@ -124,11 +130,13 @@ describe("AIHelper openai_account provider", function()
             assert.is_nil(body.response_format)
         end)
 
-        it("forwards Sol and Astra unchanged without a paid fallback", function()
+        it("forwards Sol and Astra unchanged", function()
+            AIHelper.settings.secondary_ai = nil
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
             for _, model in ipairs({ "gpt-6-sol", "gpt-6-astra" }) do
                 AIHelper.settings.primary_ai.model = model
                 local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
-                assert.are.equal(1, #reqs)
+                assert.are.equal(2, #reqs)
                 assert.are.equal("openai_account", reqs[1].provider)
                 assert.are.equal(Responses.ENDPOINT, reqs[1].url)
                 assert.is_true(reqs[1].secure)
@@ -144,11 +152,35 @@ describe("AIHelper openai_account provider", function()
             AIHelper.providers.openai_account.endpoint = nil
         end)
 
-        it("unauthenticated subscription-primary fails before any paid request is built", function()
+        it("unauthenticated subscription-primary skips to the configured secondary", function()
             AIHelper._openai_auth = fakeAuth({ connected = false })
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
+            assert.are.equal(1, #reqs)
+            assert.are.equal("gemini", reqs[1].provider)
+            assert.are.equal("secondary", reqs[1].slot)
+        end)
+
+        it("unauthenticated subscription with no usable secondary returns the auth error", function()
+            AIHelper._openai_auth = fakeAuth({ connected = false })
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-sol" }
             local reqs, code = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
             assert.is_nil(reqs)
             assert.are.equal("error_auth", code)
+        end)
+
+        it("a build crash in the subscription slot still lets the secondary run", function()
+            local old = AIHelper.buildSubscriptionRequest
+            AIHelper.buildSubscriptionRequest = function() error("boom") end
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
+            AIHelper.buildSubscriptionRequest = old
+            assert.are.equal(1, #reqs)
+            assert.are.equal("gemini", reqs[1].provider)
+        end)
+
+        it("identical primary and secondary are deduplicated", function()
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
+            assert.are.equal(1, #reqs)
         end)
 
         it("API-primary behaviour is unchanged", function()
@@ -169,7 +201,12 @@ describe("AIHelper openai_account provider", function()
             AIHelper._secure_http = secure
             local http = package.loaded["socket.http"]
             local old_request = http and http.request
-            if http then http.request = function(r) table.insert(generic_calls, r.url); return 1, 200, {} end end
+            local paid_body = json.encode({ choices = { { message = { content = '{"characters":[{"name":"Paid"}]}' } } } })
+            local su, lt = package.loaded["socketutil"], package.loaded["ltn12"]
+            su.set_timeout = function() end; su.reset_timeout = function() end
+            su.table_sink = function(t) return t end
+            lt.source = { string = function(x) return x end }
+            if http then http.request = function(r) table.insert(generic_calls, r.url); table.insert(r.sink, paid_body); return 1, 200, {} end end
             -- Track any legacy transport import during the child run.
             local legacy_mods = { "socket.http", "ssl.https", "socketutil", "ltn12" }
             local real_require = require
@@ -194,8 +231,17 @@ describe("AIHelper openai_account provider", function()
         local paid = { url = "https://api.openai.com/v1/chat/completions", provider = "chatgpt", headers = {}, body = "{}" }
 
         for _, status in ipairs({ 401, 429, 500, 503 }) do
-            it("does not fall through to a paid request on HTTP " .. status, function()
-                local tmp = run({ { status, '{"error":{"message":"Bearer tok_SECRET_ACCESS"}}' }, { status, "" } }, { subReq(), paid })
+            it("falls through to the configured API secondary on HTTP " .. status, function()
+                local tmp = run({ { status, '{"error":{"message":"Bearer tok_SECRET_ACCESS"}}' } }, { subReq(), paid })
+                assert.are.equal(1, #generic_calls)
+                assert.are.equal(paid.url, generic_calls[1])
+                local data = AIHelper:checkAsyncResult(tmp)
+                assert.is_table(data)
+                assert.are.equal("chatgpt", AIHelper.last_route.provider)
+            end)
+
+            it("surfaces a safe error when the only subscription route fails with HTTP " .. status, function()
+                local tmp = run({ { status, '{"error":{"message":"Bearer tok_SECRET_ACCESS"}}' } }, { subReq() })
                 assert.are.equal(0, #generic_calls)
                 local data, code, msg = AIHelper:checkAsyncResult(tmp)
                 assert.is_false(data)
@@ -228,15 +274,15 @@ describe("AIHelper openai_account provider", function()
             assert.is_table(data)
         end)
 
-        it("rejects incomplete and malformed streams without fallback", function()
+        it("rejects incomplete and malformed streams (no repair)", function()
             local truncated = "data: " .. json.encode({ type = "response.output_text.delta", delta = '{"a":1}' }) .. "\n\n"
-            local tmp = run({ { 200, truncated } }, { subReq(), paid })
+            local tmp = run({ { 200, truncated } }, { subReq() })
             assert.are.equal(0, #generic_calls)
             local data, code = AIHelper:checkAsyncResult(tmp)
             assert.is_false(data)
             assert.are.equal("error_incomplete", code)
 
-            tmp = run({ { 200, "data: {broken\n\n" } }, { subReq(), paid })
+            tmp = run({ { 200, "data: {broken\n\n" } }, { subReq() })
             data, code = AIHelper:checkAsyncResult(tmp)
             assert.is_false(data)
             assert.are.equal("error_parse", code)
@@ -256,7 +302,7 @@ describe("AIHelper openai_account provider", function()
             req.secure = nil
             local https = package.loaded["ssl.https"]
             local before = https and https.cert_verify
-            local tmp = run({ { 200, sse_ok('{"a":1}') } }, { req, paid })
+            local tmp = run({ { 200, sse_ok('{"a":1}') } }, { req })
             assert.are.equal(0, #secure.calls)
             assert.are.equal(0, #generic_calls)
             assert.are.equal(0, #_G.legacy_imports)
@@ -265,7 +311,7 @@ describe("AIHelper openai_account provider", function()
         end)
 
         it("surfaces local TLS failures safely", function()
-            local tmp = run({ { nil, "tls_failed", "The secure connection could not be verified." } }, { subReq(), paid })
+            local tmp = run({ { nil, "tls_failed", "The secure connection could not be verified." } }, { subReq() })
             assert.are.equal(0, #generic_calls)
             local data, code, msg = AIHelper:checkAsyncResult(tmp)
             assert.is_false(data)
@@ -276,24 +322,33 @@ describe("AIHelper openai_account provider", function()
 
     describe("sync chain (executeUnifiedRequest)", function()
         for _, status in ipairs({ 429, 500 }) do
-            it("subscription-primary never falls back to paid secondary on HTTP " .. status, function()
+            it("subscription-primary falls back to the configured API secondary on HTTP " .. status, function()
                 AIHelper._secure_http = fakeSecure({ { status, "" } })
-                local res, code = AIHelper:executeUnifiedRequest("p")
-                assert.is_nil(res)
-                assert.are.equal(0, #generic_calls)
-                assert.is_not_nil(code)
+                local res = AIHelper:executeUnifiedRequest("p")
+                assert.is_true(res.paid)
+                assert.are.same({ "gemini" }, generic_calls)
+                assert.are.equal("secondary", AIHelper.last_route.slot)
             end)
         end
 
-        it("unauthenticated subscription-primary never tries paid secondary", function()
+        it("unauthenticated subscription-primary skips to the configured secondary", function()
             AIHelper._openai_auth = fakeAuth({ connected = false })
-            local res, code = AIHelper:executeUnifiedRequest("p")
-            assert.is_nil(res)
-            assert.are.equal("error_auth", code)
-            assert.are.equal(0, #generic_calls)
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_true(res.paid)
+            assert.are.same({ "gemini" }, generic_calls)
         end)
 
-        it("401 refreshes once in the parent then asks to reconnect", function()
+        it("401 refreshes once in the parent then falls back to the secondary", function()
+            local s = fakeSecure({ { 401, "" }, { 401, "" } })
+            AIHelper._secure_http = s
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_true(res.paid)
+            assert.are.equal(2, #s.calls)
+            assert.are.equal(1, auth.calls.refresh)
+        end)
+
+        it("401 refreshes once in the parent then asks to reconnect (no secondary)", function()
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
             local s = fakeSecure({ { 401, "" }, { 401, "" } })
             AIHelper._secure_http = s
             local res, code, msg = AIHelper:executeUnifiedRequest("p")
@@ -311,6 +366,7 @@ describe("AIHelper openai_account provider", function()
             local res = AIHelper:executeUnifiedRequest("p")
             assert.is_table(res)
             assert.are.equal(0, #generic_calls)
+            assert.are.equal("primary", AIHelper.last_route.slot)
         end)
 
         it("API-primary still falls back as before", function()

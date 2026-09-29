@@ -89,7 +89,7 @@ function M:showWarning()
     local dialog
     dialog = ButtonDialog:new{
         modal = true,
-        title = "Experimental ChatGPT subscription sign-in\n\nThis uses an undocumented service integration, not a guaranteed official third-party API. Subscription usage has plan quotas. Tokens are stored locally on this reader; on VFAT/USB-accessible storage physical access may expose them. Subscription requests NEVER fall back to paid API calls automatically. Continue only if you accept these limitations.",
+        title = "Experimental ChatGPT subscription sign-in\n\nThis uses an undocumented service integration, not a guaranteed official third-party API. Subscription usage has plan quotas. Tokens are stored locally on this reader; on VFAT/USB-accessible storage physical access may expose them. If you configure a billed API model as the Secondary AI, failed subscription requests fall back to it and can incur API charges. Continue only if you accept these limitations.",
         buttons = {
             {{ text = "Continue to sign in", callback = function()
                 self.dialog = nil

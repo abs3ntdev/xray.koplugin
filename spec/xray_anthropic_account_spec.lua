@@ -26,7 +26,7 @@ describe("AIHelper anthropic_account provider", function()
             self.calls.context = self.calls.context + 1
             if force then self.calls.refresh = self.calls.refresh + 1 end
             if opts.connected == false then return nil, "not_connected", "Sign in with Claude first." end
-            return { access_token = force and "sk-ant-oat_ROTATED" or "sk-ant-oat_SECRET", expires_at = 99 }
+            return { access_token = force and "sk-ant-oat_ROTATED" or "sk-ant-oat_SECRET", account_id = "acct_1", expires_at = 99 }
         end
         function a:logout() self.calls.logout = self.calls.logout + 1; return true end
         return a
@@ -116,9 +116,13 @@ describe("AIHelper anthropic_account provider", function()
     end)
 
     describe("async chain", function()
-        it("subscription-primary builds only the pinned secure Claude request", function()
+        it("subscription-primary builds the pinned Claude request then the configured billed API secondary", function()
             local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
-            assert.are.equal(1, #reqs)
+            assert.are.equal(2, #reqs)
+            assert.are.equal("claude", reqs[2].provider)
+            assert.are.equal("paid_claude_key", reqs[2].headers["x-api-key"])
+            assert.is_nil(reqs[2].headers["Authorization"])
+            assert.is_nil(reqs[2].secure)
             local r = reqs[1]
             assert.are.equal("anthropic_account", r.provider)
             assert.are.equal(Messages.ENDPOINT, r.url)
@@ -131,7 +135,7 @@ describe("AIHelper anthropic_account provider", function()
             assert.are.equal(0, oauth.calls.context)
         end)
 
-        it("forwards claude-sonnet-5-5 unchanged without fallback", function()
+        it("forwards claude-sonnet-5-5 unchanged", function()
             AIHelper.settings.primary_ai = { provider = "anthropic_account", model = "claude-sonnet-5-5" }
             local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
             assert.are.equal("claude-sonnet-5-5", json.decode(reqs[1].body).model)
@@ -144,11 +148,20 @@ describe("AIHelper anthropic_account provider", function()
             assert.are.equal(Messages.ENDPOINT, reqs[1].url)
         end)
 
-        it("unauthenticated subscription-primary fails before any paid request", function()
+        it("unauthenticated subscription-primary skips to the configured API secondary", function()
             AIHelper._anthropic_auth = fakeAuth({ connected = false })
-            local reqs, code = AIHelper:buildComprehensiveRequest(nil, nil, nil, "p")
-            assert.is_nil(reqs)
-            assert.are.equal("error_auth", code)
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "p")
+            assert.are.equal(1, #reqs)
+            assert.are.equal("claude", reqs[1].provider)
+        end)
+
+        it("subscription -> subscription builds both pinned requests in the parent", function()
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "p")
+            assert.are.equal(2, #reqs)
+            assert.is_true(reqs[1].secure and reqs[2].secure)
+            assert.are.equal("openai_account", reqs[2].provider)
+            assert.are.equal(1, oauth.calls.context)
         end)
 
         it("API-primary with Claude subscription secondary keeps paid primary first", function()
@@ -168,7 +181,12 @@ describe("AIHelper anthropic_account provider", function()
             AIHelper._secure_http = secure
             local http = package.loaded["socket.http"]
             local old_request = http and http.request
-            if http then http.request = function(r) table.insert(generic_calls, r.url); return 1, 200, {} end end
+            local paid_body = json.encode({ content = { { type = "text", text = '{"characters":[{"name":"Paid"}]}' } } })
+            local su, lt = package.loaded["socketutil"], package.loaded["ltn12"]
+            su.set_timeout = function() end; su.reset_timeout = function() end
+            su.table_sink = function(t) return t end
+            lt.source = { string = function(x) return x end }
+            if http then http.request = function(r) table.insert(generic_calls, r.url); table.insert(r.sink, paid_body); return 1, 200, {} end end
             local real_require = require
             _G.legacy_imports = {}
             _G.require = function(name, ...)
@@ -188,8 +206,26 @@ describe("AIHelper anthropic_account provider", function()
         local paid = { url = "https://api.anthropic.com/v1/messages", provider = "claude", headers = {}, body = "{}" }
 
         for _, status in ipairs({ 401, 403, 429, 500, 529 }) do
-            it("never falls through to paid API on HTTP " .. status, function()
+            it("falls through to the configured billed API secondary on HTTP " .. status, function()
                 local tmp = run({ { status, '{"error":{"type":"x","message":"sk-ant-oat_SECRET"}}' } }, { subReq(), paid })
+                assert.are.same({ paid.url }, generic_calls)
+                assert.is_table(AIHelper:checkAsyncResult(tmp))
+                assert.are.equal("claude", AIHelper.last_route.provider)
+            end)
+
+            it("falls through subscription -> subscription on HTTP " .. status, function()
+                local o = assert(AIHelper:buildOpenAIAccountRequest("p", "gpt-6-luna"))
+                local okstream = "data: " .. json.encode({ type = "response.output_text.delta", delta = '{"characters":[]}' }) .. "\n\n"
+                    .. "data: " .. json.encode({ type = "response.completed", response = { status = "completed" } }) .. "\n\n"
+                local tmp = run({ { status, "" }, { 200, okstream } }, { subReq(), o })
+                assert.are.equal(2, #secure.calls)
+                assert.are.equal(0, #generic_calls)
+                assert.is_table(AIHelper:checkAsyncResult(tmp))
+                assert.are.equal("openai_account", AIHelper.last_route.provider)
+            end)
+
+            it("surfaces a safe error when the only route fails with HTTP " .. status, function()
+                local tmp = run({ { status, '{"error":{"type":"x","message":"sk-ant-oat_SECRET"}}' } }, { subReq() })
                 assert.are.equal(0, #generic_calls)
                 assert.are.equal(1, #secure.calls)
                 local data, code, msg = AIHelper:checkAsyncResult(tmp)
@@ -215,9 +251,9 @@ describe("AIHelper anthropic_account provider", function()
             assert.is_table(AIHelper:checkAsyncResult(tmp))
         end)
 
-        it("rejects truncated stream without fallback or repair", function()
+        it("rejects truncated stream without repair", function()
             local trunc = ev({ type = "content_block_delta", index = 0, delta = { type = "text_delta", text = '{"a":' } })
-            local tmp = run({ { 200, trunc } }, { subReq(), paid })
+            local tmp = run({ { 200, trunc } }, { subReq() })
             local data, code = AIHelper:checkAsyncResult(tmp)
             assert.is_false(data)
             assert.are.equal("error_incomplete", code)
@@ -237,7 +273,7 @@ describe("AIHelper anthropic_account provider", function()
 
         it("rejects anthropic_account missing secure tag without legacy HTTP", function()
             local req = subReq(); req.secure = nil
-            local tmp = run({ { 200, sse_ok('{"a":1}') } }, { req, paid })
+            local tmp = run({ { 200, sse_ok('{"a":1}') } }, { req })
             assert.are.equal(0, #secure.calls)
             assert.are.equal(0, #generic_calls)
             assert.are.equal(0, #_G.legacy_imports)
@@ -245,7 +281,7 @@ describe("AIHelper anthropic_account provider", function()
         end)
 
         it("surfaces TLS failures safely", function()
-            local tmp = run({ { nil, "tls_failed", "The secure connection could not be verified." } }, { subReq(), paid })
+            local tmp = run({ { nil, "tls_failed", "The secure connection could not be verified." } }, { subReq() })
             local data, code = AIHelper:checkAsyncResult(tmp)
             assert.is_false(data)
             assert.are.equal("error_network", code)
@@ -255,32 +291,61 @@ describe("AIHelper anthropic_account provider", function()
 
     describe("sync chain", function()
         for _, status in ipairs({ 429, 500, 529 }) do
-            it("never falls back to paid Claude API on HTTP " .. status, function()
+            it("falls back to the configured billed Claude API on HTTP " .. status, function()
                 AIHelper._secure_http = fakeSecure({ { status, "" } })
-                local res, code = AIHelper:executeUnifiedRequest("p")
-                assert.is_nil(res)
-                assert.is_not_nil(code)
-                assert.are.equal(0, #generic_calls)
+                local res = AIHelper:executeUnifiedRequest("p")
+                assert.is_true(res.paid)
+                assert.are.same({ "claude" }, generic_calls)
             end)
         end
 
-        it("unauthenticated primary never tries paid secondary", function()
+        it("unauthenticated primary skips to the configured secondary", function()
             AIHelper._anthropic_auth = fakeAuth({ connected = false })
-            local res, code = AIHelper:executeUnifiedRequest("p")
-            assert.is_nil(res)
-            assert.are.equal("error_auth", code)
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_true(res.paid)
+            assert.are.same({ "claude" }, generic_calls)
+        end)
+
+        it("parse failure falls back to the secondary", function()
+            AIHelper._secure_http = fakeSecure({ { 200, sse_ok("not json") } })
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_true(res.paid)
+        end)
+
+        it("subscription -> subscription failover (sync)", function()
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
+            local okstream = "data: " .. json.encode({ type = "response.output_text.delta", delta = '{"characters":[]}' }) .. "\n\n"
+                .. "data: " .. json.encode({ type = "response.completed", response = { status = "completed" } }) .. "\n\n"
+            AIHelper._secure_http = fakeSecure({ { 500, "" }, { 200, okstream } })
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_table(res)
+            assert.are.equal("openai_account", AIHelper.last_route.provider)
             assert.are.equal(0, #generic_calls)
         end)
 
-        it("parse failure does not fall back", function()
-            AIHelper._secure_http = fakeSecure({ { 200, sse_ok("not json") } })
+        it("both routes failing returns the last error", function()
+            AIHelper.callClaude = function() table.insert(generic_calls, "claude"); return nil, "error_quota", "q" end
+            AIHelper._secure_http = fakeSecure({ { 500, "" } })
             local res, code = AIHelper:executeUnifiedRequest("p")
             assert.is_nil(res)
-            assert.are.equal("error_parse", code)
+            assert.are.equal("error_quota", code)
+            assert.are.same({ "claude" }, generic_calls)
+        end)
+
+        it("cancellation of the subscription primary never triggers the secondary", function()
+            AIHelper.trap_widget = {}
+            local Trapper = package.loaded["ui/trapper"]
+            local old = Trapper.dismissableRunInSubprocess
+            Trapper.dismissableRunInSubprocess = function() return false end
+            local res, code = AIHelper:executeUnifiedRequest("p")
+            Trapper.dismissableRunInSubprocess = old
+            assert.is_nil(res)
+            assert.are.equal("USER_CANCELLED", code)
             assert.are.equal(0, #generic_calls)
         end)
 
         it("401 refreshes once in parent then asks to reconnect", function()
+            AIHelper.settings.secondary_ai = { provider = "anthropic_account", model = "claude-sonnet-5" }
             local s = fakeSecure({ { 401, "" }, { 401, "" } })
             AIHelper._secure_http = s
             local res, code, msg = AIHelper:executeUnifiedRequest("p")

@@ -272,7 +272,8 @@ end
 local OPENAI_ACCOUNT = "openai_account"
 local ANTHROPIC_ACCOUNT = "anthropic_account"
 
--- Subscription providers: OAuth-only, verified transport, never paid fallback.
+-- Subscription providers: OAuth-only, verified transport. They take part in
+-- normal configured primary/secondary failover like any other provider.
 local SUBSCRIPTION = { [OPENAI_ACCOUNT] = true, [ANTHROPIC_ACCOUNT] = true }
 local function isSubscription(provider_id) return SUBSCRIPTION[provider_id] == true end
 
@@ -456,6 +457,20 @@ function AIHelper:_performSecureRequest(req, timeout)
     return tonumber(b), c
 end
 
+-- Ordered configured failover slots: primary, then secondary unless it is the
+-- identical provider+model (no point retrying the same route twice).
+function AIHelper:_failoverSlots()
+    local primary = (self.settings and self.settings.primary_ai) or DEFAULT_AI.primary
+    local secondary = (self.settings and self.settings.secondary_ai) or DEFAULT_AI.secondary
+    local slots = { { provider = primary.provider, model = primary.model, slot = "primary" } }
+    if type(secondary) == "table" and secondary.provider
+        and not (secondary.provider == primary.provider
+            and self:resolveModel(secondary.provider, secondary.model) == self:resolveModel(primary.provider, primary.model)) then
+        table.insert(slots, { provider = secondary.provider, model = secondary.model, slot = "secondary" })
+    end
+    return slots
+end
+
 -- Build all possible HTTP request parameters (primary and fallback) for a comprehensive fetch.
 -- Returns: { {url, headers, body, provider, model}, ... } or nil, error_code, error_msg
 function AIHelper:buildComprehensiveRequest(title, author, context, prompt_override)
@@ -463,23 +478,23 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
     local primary = self.settings.primary_ai or DEFAULT_AI.primary
     local secondary = self.settings.secondary_ai or DEFAULT_AI.secondary
 
-    -- Billing policy: subscription-primary NEVER falls through to any paid API
-    -- secondary, including when the subscription request cannot even be built.
-    if isSubscription(primary.provider) then
-        local req, code, msg = self:buildSubscriptionRequest(primary.provider, prompt, self:resolveModel(primary.provider, primary.model))
-        if not req then return nil, code, msg end
-        return { req }
-    end
-
+    -- Configured failover: primary then secondary, whichever route (subscription
+    -- or billed API) either slot uses. A subscription secondary after an API
+    -- primary, or a billed API secondary after a subscription primary, both run
+    -- only when the user configured them. Subscription requests are built here
+    -- in the PARENT so any token refresh happens before the fork.
     local requests = {}
-    for _, ai in ipairs({ primary, secondary }) do
+    local first_code, first_msg
+    for slot_index, ai in ipairs(self:_failoverSlots()) do
         local config = self.providers[ai.provider]
         if isSubscription(ai.provider) then
-            -- API-primary with an explicitly chosen subscription secondary: the
-            -- subscription is not paid API usage, so keep it as the fallback.
-            if self:isProviderConfigured(ai.provider) then
-                local req = self:buildSubscriptionRequest(ai.provider, prompt, self:resolveModel(ai.provider, ai.model))
-                if req then table.insert(requests, req) end
+            local okb, req, code, msg = pcall(self.buildSubscriptionRequest, self, ai.provider, prompt, self:resolveModel(ai.provider, ai.model))
+            if not okb then req, code, msg = nil, "error_auth", "Subscription request could not be prepared." end
+            if req then
+                req.slot = ai.slot
+                table.insert(requests, req)
+            elseif not first_code then
+                first_code, first_msg = code, msg
             end
         elseif config and config.api_key and config.api_key ~= "" then
             local url, headers, body, stream_format
@@ -695,14 +710,17 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
                 provider = ai.provider,
                 model = resolved_model or ai.model,
                 stream_format = stream_format,
+                slot = ai.slot,
             })
+        elseif not first_code then
+            first_code, first_msg = "error_api", "No API key configured"
         end
     end
     
     if #requests > 0 then
         return requests
     end
-    return nil, "error_api", "No API key configured"
+    return nil, first_code or "error_api", first_msg or "No API key configured"
 end
 
 -- Check if at least one API key is configured
@@ -904,7 +922,7 @@ end
 
 -- Request chain executed inside the forked child (extracted for testability).
 -- Secure-tagged subscription requests always use SecureHTTP here, never refresh
--- credentials, and never fall through to later (paid) requests.
+-- credentials. On failure the chain continues to the configured secondary.
 function AIHelper:_runChildRequests(request_params, result_file)
     self:log("AIHelper Child: Started background process")
     -- Legacy (API-key) transport is initialised lazily, only when a
@@ -1010,17 +1028,22 @@ function AIHelper:_runChildRequests(request_params, result_file)
                 out_code, out_text = 0, json.encode({ error = { code = "error_api", message = "Subscription support is unavailable." } })
             end
             self:log(string.format("AIHelper Child: Subscription request finished with code %s", tostring(out_code)))
-            -- The subscription outcome is always final: never fall through to
-            -- any later (paid) request in the chain.
-            local f = io.open(result_file, "w")
-            if f then
-                f:write(tostring(out_code) .. "\n")
-                f:write(tostring(req.provider) .. "\n")
-                f:write(out_text)
-                f:close()
+            -- Success, or the last configured route, is final. Otherwise fall
+            -- through to the user's configured secondary (which may be a billed
+            -- API). The child never refreshes credentials: a 401 here just
+            -- moves on to the next route.
+            if out_code == 200 or i == #requests then
+                local f = io.open(result_file, "w")
+                if f then
+                    f:write(tostring(out_code) .. "\n")
+                    f:write(tostring(req.provider) .. "\n")
+                    f:write(out_text)
+                    f:close()
+                end
+                if out_code == 200 then success_found = true end
+                break
             end
-            if out_code == 200 then success_found = true end
-            break
+            goto continue_requests
         end
 
         -- Mirror the content-length completeness check from makeRequest (lines 167-170)
@@ -1225,6 +1248,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
                 end
             end
         end
+        ::continue_requests::
     end
     if socketutil_req then socketutil_req:reset_timeout() end
 end
@@ -1239,6 +1263,14 @@ function AIHelper:makeRequestAsync(request_params, result_file)
     if result_file then
         pcall(function() os.remove(result_file) end)
     end
+
+    -- Route metadata only (no URLs, headers or bodies) for update history.
+    local routes = {}
+    local list = (type(request_params) == "table" and request_params.url) and { request_params } or request_params
+    for _, r in ipairs(type(list) == "table" and list or {}) do
+        if type(r) == "table" then table.insert(routes, { provider = r.provider, model = r.model, slot = r.slot }) end
+    end
+    self._async_routes = routes
 
     local ffiutil = getFFIUtil()
     local ok_ffi = ffiutil ~= nil
@@ -1376,6 +1408,11 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
     if not second_newline then return false, "error_parse", "Malformed async result (no provider line)" end
     local provider = rest:sub(1, second_newline - 1)
     local response_text = rest:sub(second_newline + 1)
+    -- Record which configured route produced this result (metadata only).
+    self.last_route = { provider = provider }
+    for _, r in ipairs(self._async_routes or {}) do
+        if r.provider == provider then self.last_route = { provider = r.provider, model = r.model, slot = r.slot }; break end
+    end
 
     if code_str == "ERROR" then
         return false, "error_api", response_text
@@ -2402,50 +2439,55 @@ function AIHelper:createPrompt(title, author, context, section_name, targeted_wo
 end
 
 function AIHelper:executeUnifiedRequest(prompt)
-    local primary = self.settings.primary_ai or DEFAULT_AI.primary
-    local secondary = self.settings.secondary_ai or DEFAULT_AI.secondary
-    
-    -- Billing policy: subscription-primary never falls back to a paid secondary.
-    if isSubscription(primary.provider) then
-        return self:callSubscription(primary.provider, prompt, self:resolveModel(primary.provider, primary.model))
-    end
-
-    local models_to_try = { primary, secondary }
-    local last_err = "No models configured."
-    
-    for _, ai in ipairs(models_to_try) do
+    -- Configured failover (primary then secondary) regardless of whether
+    -- either slot is a subscription or a billed API. Cancellation stops the
+    -- chain immediately and never triggers the secondary.
+    self.last_route = nil
+    local last_code, last_err = "error_api", "No models configured."
+    local slots = self:_failoverSlots()
+    for _, ai in ipairs(slots) do
         local config = self.providers[ai.provider]
+        local model = self:resolveModel(ai.provider, ai.model)
+        local result, err_code, err_msg
+        local attempted = false
         if isSubscription(ai.provider) then
             if self:isProviderConfigured(ai.provider) then
-                local result, _, err_msg = self:callSubscription(ai.provider, prompt, self:resolveModel(ai.provider, ai.model))
-                if result then return result end
-                last_err = err_msg or "Subscription request failed"
+                attempted = true
+                local okc, r, c, m = pcall(self.callSubscription, self, ai.provider, prompt, model)
+                if okc then result, err_code, err_msg = r, c, m
+                else result, err_code, err_msg = nil, "error_api", "Subscription request failed." end
             else
-                last_err = (ai.provider == ANTHROPIC_ACCOUNT) and "Sign in with Claude first." or "Sign in with ChatGPT first."
+                err_code = "error_auth"
+                err_msg = (ai.provider == ANTHROPIC_ACCOUNT) and "Sign in with Claude first." or "Sign in with ChatGPT first."
             end
         elseif not config or not config.api_key or config.api_key == "" then
             self:log("AIHelper: Skipping " .. ai.provider .. " (" .. tostring(ai.model) .. ") - API Key missing")
-            last_err = "API Key not set for " .. (ai.provider == "gemini" and "Google Gemini" or "ChatGPT")
+            err_code = "error_api"
+            err_msg = "API Key not set for " .. (ai.provider == "gemini" and "Google Gemini" or tostring(ai.provider))
         else
-            local model = self:resolveModel(ai.provider, ai.model)
-            self:log("AIHelper: Trying unified fallback model: " .. ai.provider .. " / " .. tostring(model))
-            local result, err_code, err_msg
+            attempted = true
+            self:log("AIHelper: Trying " .. ai.slot .. " model: " .. ai.provider .. " / " .. tostring(model))
             if ai.provider == "gemini" then
                 result, err_code, err_msg = self:callGemini(prompt, config, model)
             elseif self:isAnthropic(ai.provider, config.endpoint) then
                 result, err_code, err_msg = self:callClaude(prompt, config, model)
-            elseif ai.provider == "custom1" or ai.provider == "custom2" then
-                result, err_code, err_msg = self:callChatGPT(prompt, config, model)
             else
                 result, err_code, err_msg = self:callChatGPT(prompt, config, model)
             end
-            
-            if result then return result end
-            self:log("AIHelper: Model failed: " .. tostring(err_msg))
-            last_err = err_msg or "Unknown API Error"
         end
+        if result then
+            self.last_route = { provider = ai.provider, model = model, slot = ai.slot }
+            return result
+        end
+        if err_code == "USER_CANCELLED" then
+            self.last_route = { provider = ai.provider, model = model, slot = ai.slot }
+            return nil, "USER_CANCELLED", err_msg or "Request cancelled"
+        end
+        if attempted then self:log("AIHelper: " .. ai.slot .. " route failed: " .. tostring(err_code)) end
+        last_code, last_err = err_code or "error_api", err_msg or "Unknown API Error"
+        self.last_route = { provider = ai.provider, model = model, slot = ai.slot }
     end
-    return nil, "error_api", last_err
+    return nil, last_code, last_err
 end
 
 function AIHelper:getBookDataSection(title, author, provider_name, context, section_name)
@@ -2653,6 +2695,7 @@ function AIHelper:callClaude(prompt, config, current_model)
     
     local url = config.endpoint or "https://api.anthropic.com/v1/messages"
     local ok, code, response_text = self:makeRequest(url, headers, request_body)
+    if code == "USER_CANCELLED" then return nil, "USER_CANCELLED", "Request cancelled" end
     
     local code_num = tonumber(code)
     self:log("AIHelper: Anthropic Response Code: " .. tostring(code_num))
@@ -2715,6 +2758,7 @@ function AIHelper:callGemini(prompt, config, current_model)
     })
     self:log("AIHelper: Sending Gemini request (" .. #request_body .. " bytes)")
     local ok, code, response_text, status = self:makeRequest(url, { ["Content-Type"] = "application/json", ["x-goog-api-key"] = config.api_key }, request_body)
+    if code == "USER_CANCELLED" then return nil, "USER_CANCELLED", "Request cancelled" end
     local code_num = tonumber(code)
     self:log("AIHelper: [" .. current_model .. "] Response Code: " .. tostring(code_num))
     self:log("AIHelper: [" .. current_model .. "] Response received (" .. (response_text and #response_text or 0) .. " bytes)")
@@ -2820,6 +2864,7 @@ function AIHelper:callChatGPT(prompt, config, current_model)
     end
     
     local ok, code, response_text = self:makeRequest(config.endpoint or "https://api.openai.com/v1/chat/completions", headers, request_body)
+    if code == "USER_CANCELLED" then return nil, "USER_CANCELLED", "Request cancelled" end
     
     local code_num = tonumber(code)
     self:log("AIHelper: ChatGPT Response Code: " .. tostring(code_num))

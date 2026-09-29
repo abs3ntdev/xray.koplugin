@@ -32,7 +32,7 @@ Technically, the grant lets whoever holds the token do all of those things. The 
 
 - "Connected" only means a local credential is present. It does not prove your plan includes Claude access or has quota left.
 - Usage counts against your Claude plan quota.
-- Subscription requests never fall back to a paid API automatically.
+- Normal primary/secondary failover applies: if the subscription fails, the configured Secondary AI Model is tried. A billed API secondary can incur API charges. Choose a subscription or unconfigured secondary to avoid charges. Cancelling never triggers the fallback. Settings → Logs → Update History shows which slot served each update.
 - Tokens are stored locally on the reader. On FAT/USB-accessible storage, physical access may expose them.
 - Signing in does not change your saved model or defaults. Pick a "Claude subscription (experimental)" model in the model menu, which is only usable once connected.
 - Sign out removes local credentials only.

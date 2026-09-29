@@ -45,7 +45,7 @@ describe("ChatGPT account UI", function()
         local warning = _G.ui_tracker.last_shown
         assert.truthy(warning.args.title:find("undocumented"))
         assert.truthy(warning.args.title:find("VFAT"))
-        assert.truthy(warning.args.title:find("NEVER fall back"))
+        assert.truthy(warning.args.title:find("can incur API charges", 1, true))
         warning.buttons[1][1].callback()
         local children = ui.dialog._added_widgets[1].args
         local text = children[#children].args.text

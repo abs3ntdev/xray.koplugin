@@ -118,7 +118,6 @@ function Messages.buildRequest(opts)
         model = model,
         stream_format = Messages.STREAM_FORMAT,
         secure = true,
-        no_fallback = true,
     }
 end
 
@@ -147,7 +146,7 @@ function Messages.classifyHttpError(status, body)
     if code_num == 401 or code_num == 403 then
         return "error_auth", "Claude sign-in expired, was revoked or this client was refused (HTTP " .. code_num .. "). Reconnect the Claude subscription in X-Ray settings, then retry." .. suffix
     elseif code_num == 429 then
-        return "error_quota", "Claude subscription usage limit reached (HTTP 429). No paid API fallback was used." .. suffix
+        return "error_quota", "Claude subscription usage limit reached (HTTP 429)." .. suffix
     elseif code_num and code_num >= 500 then
         return "error_api", "Claude service unavailable (HTTP " .. code_num .. "). Please retry later." .. suffix
     elseif code_num then
@@ -206,7 +205,7 @@ function Messages.decodeStream(response_text)
             elseif t == "error" then
                 local code = type(ev.error) == "table" and safeCode(ev.error.type) or nil
                 if code == "rate_limit_error" then
-                    return nil, "error_quota", "Claude subscription usage limit reached [" .. code .. "]. No paid API fallback was used."
+                    return nil, "error_quota", "Claude subscription usage limit reached [" .. code .. "]."
                 end
                 return nil, "error_api", "Claude response failed" .. (code and (" [" .. code .. "]") or "") .. "."
             end

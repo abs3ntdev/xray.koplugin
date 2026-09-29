@@ -79,7 +79,6 @@ function Responses.buildRequest(opts)
         model = model,
         stream_format = Responses.STREAM_FORMAT,
         secure = true,       -- must use verified SecureHTTP, even in forked children
-        no_fallback = true,  -- subscription-primary never falls through to paid providers
     }
 end
 
@@ -110,7 +109,7 @@ function Responses.classifyHttpError(status, body)
     if code_num == 401 or code_num == 403 then
         return "error_auth", "ChatGPT sign-in expired or was revoked (HTTP " .. code_num .. "). Reconnect the ChatGPT subscription in X-Ray settings, then retry." .. suffix
     elseif code_num == 429 then
-        return "error_quota", "ChatGPT subscription usage limit reached (HTTP 429). No paid API fallback was used." .. suffix
+        return "error_quota", "ChatGPT subscription usage limit reached (HTTP 429)." .. suffix
     elseif code_num and code_num >= 500 then
         return "error_api", "ChatGPT service unavailable (HTTP " .. code_num .. "). Please retry later." .. suffix
     elseif code_num then
@@ -200,7 +199,7 @@ function Responses.decodeStream(response_text)
                 local err = ev.error or (type(ev.response) == "table" and ev.response.error) or {}
                 local code = type(err) == "table" and (safeCode(err.code) or safeCode(err.type)) or safeCode(ev.code)
                 if code and (code:find("rate_limit", 1, true) or code:find("usage_limit", 1, true) or code:find("quota", 1, true)) then
-                    return nil, "error_quota", "ChatGPT subscription usage limit reached [" .. code .. "]. No paid API fallback was used."
+                    return nil, "error_quota", "ChatGPT subscription usage limit reached [" .. code .. "]."
                 end
                 return nil, "error_api", "ChatGPT response failed" .. (code and (" [" .. code .. "]") or "") .. "."
             end

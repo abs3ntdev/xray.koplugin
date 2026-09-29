@@ -37,7 +37,7 @@ describe("xray_anthropic_messages", function()
             assert.are.equal("https://api.anthropic.com/v1/messages?beta=true", req.url)
             assert.are.equal("anthropic_account", req.provider)
             assert.is_true(req.secure)
-            assert.is_true(req.no_fallback)
+            assert.is_nil(req.no_fallback)
             assert.is_true(M.isPinnedRequest(req))
         end)
 

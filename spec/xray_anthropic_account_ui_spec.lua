@@ -69,7 +69,7 @@ describe("Claude account UI", function()
         assert.truthy(ui.dialog.args.title:find("not connected"))
         ui.dialog.buttons[1][1].callback()
         local t = _G.ui_tracker.last_shown.args.title
-        for _, s in ipairs({ "unofficial", "NEVER", "VFAT", "quota", "not endorsed", "only uses inference", "MCP" }) do assert.truthy(t:find(s)) end
+        for _, s in ipairs({ "unofficial", "API charges", "VFAT", "quota", "not endorsed", "only uses inference", "MCP" }) do assert.truthy(t:find(s)) end
         _G.ui_tracker.last_shown.buttons[1][1].callback()
         local children = ui.dialog._added_widgets[1].args
         assert.truthy(children[#children].args.text:find("claude.com/cai/oauth/authorize", 1, true))
