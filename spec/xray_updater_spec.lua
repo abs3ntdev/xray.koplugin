@@ -84,9 +84,11 @@ describe("xray_updater", function()
     end)
 
     describe("_showUpdateDialog", function()
-        it("should not show dialog if version is up to date", function()
+        it("shows up-to-date toast instead of update dialog when version is current", function()
             updater._showUpdateDialog({ version = "1.0.0" }, "1.0.0")
-            assert.is_nil(_G.ui_tracker.last_shown)
+            local w = _G.ui_tracker.last_shown
+            assert.is_not_nil(w)
+            assert.are.equal("InfoMessage", w.type)
         end)
 
         it("should display a ButtonDialog with 1 button row when notes are short", function()
