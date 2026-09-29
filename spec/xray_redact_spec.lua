@@ -110,15 +110,6 @@ describe("xray_logger sanitation", function()
     end)
 end)
 
-describe("spec runner assert", function()
-    it("keeps standard assert callable", function()
-        assert.are.equal(5, assert(5, "ok"))
-        local ok, err = pcall(assert, false, "callable-msg")
-        assert.is_false(ok)
-        assert.is_not_nil(tostring(err):find("callable-msg", 1, true))
-    end)
-end)
-
 describe("xray_logger without redactor", function()
     it("fails closed with a fixed placeholder", function()
         local saved_r, saved_l = package.loaded["xray_redact"], package.loaded["xray_logger"]

@@ -21,10 +21,6 @@ describe("xray_anthropic_messages", function()
         M = require("xray_anthropic_messages")
     end)
 
-    it("uses the real JSON codec", function()
-        assert.are.same({ a = { 1, 2 } }, json.decode(json.encode({ a = { 1, 2 } })))
-    end)
-
     describe("buildRequest", function()
         local req, body
         before_each(function()

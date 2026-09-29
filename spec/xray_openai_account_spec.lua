@@ -131,7 +131,6 @@ describe("AIHelper openai_account provider", function()
         end)
 
         it("forwards Sol and Astra unchanged", function()
-            AIHelper.settings.secondary_ai = nil
             AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
             for _, model in ipairs({ "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra" }) do
                 AIHelper.settings.primary_ai.model = model
