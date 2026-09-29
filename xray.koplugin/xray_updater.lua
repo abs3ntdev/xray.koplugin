@@ -440,7 +440,15 @@ local function _commit(prep)
         local clean = true
         for i = #journal, 1, -1 do
             local j = journal[i]
-            if j.placed then
+            if j.marker then
+                -- Journal entry 1, so reverted last: the old commit is only
+                -- claimed again if every plugin file was restored. Otherwise it
+                -- stays aside (.xray-old) and the build reads as unknown.
+                if clean then
+                    if _mode(lfs, j.target) == "file" then os.remove(j.target) end
+                    if not os.rename(j.backup, j.target) then clean = false end
+                end
+            elseif j.placed then
                 if j.backup then
                     if _mode(lfs, j.target) == "file" then os.remove(j.target) end
                     if not os.rename(j.backup, j.target) then clean = false end
@@ -505,12 +513,14 @@ local function _commit(prep)
     local mmode = _mode(lfs, marker)
     if mmode ~= nil then
         if mmode ~= "file" then cleanupStage(); return { success = false, err = "unexpected marker type" } end
-        local mbak = marker .. ".xray-bak"
+        -- Distinct suffix: place() clears stale *.xray-bak/-new side files and
+        -- must never delete the retired marker.
+        local mbak = marker .. ".xray-old"
         if _mode(lfs, mbak) == "file" then os.remove(mbak) end
         if _mode(lfs, mbak) ~= nil or not os.rename(marker, mbak) then
             cleanupStage(); return { success = false, err = "could not retire installed commit" }
         end
-        journal[#journal + 1] = { target = marker, backup = mbak, placed = false }
+        journal[#journal + 1] = { target = marker, backup = mbak, marker = true }
     end
     for _, e in ipairs(entries) do
         local target = plugin .. "/" .. e.rel

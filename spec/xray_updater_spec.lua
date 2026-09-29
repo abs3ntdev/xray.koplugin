@@ -331,4 +331,46 @@ describe("xray_updater (fork branch)", function()
         assert.truthy(text(last()):find("staged file changed", 1, true))
         unchanged()
     end)
+
+    it("restores the previous marker when only the final marker write fails", function()
+        local old_marker = "source=" .. SOURCE .. "\ncommit=" .. SHA_B .. "\n"
+        write(PLUGIN .. "/.xray_fork_commit", old_marker)
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        -- Fault injection: the final rename of the NEW marker into place fails
+        -- (e.g. I/O error). Every other rename is real.
+        local real_rename = os.rename
+        os.rename = function(from, to)
+            if from == PLUGIN .. "/.xray_fork_commit.xray-new" then return nil, "injected" end
+            return real_rename(from, to)
+        end
+        local ok, err = pcall(press_install)
+        os.rename = real_rename
+        assert(ok, err)
+        assert.truthy(text(last()):find("could not record installed commit", 1, true))
+        assert.truthy(text(last()):find("previous version was kept", 1, true))
+        assert.are.equal(old_marker, read(PLUGIN .. "/.xray_fork_commit"))
+        assert.are.equal("-- old main", read(PLUGIN .. "/main.lua"))
+        assert.is_false(exists(PLUGIN .. "/.xray_fork_commit.xray-old"))
+    end)
+
+    it("leaves the build unknown when restoring a replaced file fails", function()
+        local old_marker = "source=" .. SOURCE .. "\ncommit=" .. SHA_B .. "\n"
+        write(PLUGIN .. "/.xray_fork_commit", old_marker)
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        local real_rename = os.rename
+        os.rename = function(from, to)
+            if from == PLUGIN .. "/.xray_fork_commit.xray-new" then return nil, "injected" end
+            if from == PLUGIN .. "/main.lua.xray-bak" then return nil, "injected" end  -- restore fails
+            return real_rename(from, to)
+        end
+        local ok, err = pcall(press_install)
+        os.rename = real_rename
+        assert(ok, err)
+        assert.truthy(text(last()):find("Restoring the previous version failed", 1, true))
+        assert.is_false(exists(PLUGIN .. "/.xray_fork_commit"))              -- unknown, not SHA_B
+        assert.are.equal(old_marker, read(PLUGIN .. "/.xray_fork_commit.xray-old"))
+        assert.are.equal("-- old main", read(PLUGIN .. "/main.lua.xray-bak")) -- kept for recovery
+    end)
 end)
