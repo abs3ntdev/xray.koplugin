@@ -84,6 +84,7 @@ describe("TypeSafe Jev decision helper", function()
         }
         AIHelper.saveSettings = function(self, updates)
             for k, v in pairs(updates or {}) do self.settings[k] = v end
+            return true
         end
         AIHelper.makeRequestAsync = function(self, reqs) captured = reqs.url and { reqs } or reqs; return 4242 end
         saved.prompts = AIHelper.prompts

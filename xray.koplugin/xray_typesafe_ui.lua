@@ -40,6 +40,40 @@ function M:saveKey(key)
     return ok
 end
 
+-- Scrub a key input before KOReader frees its children (child-first
+-- CloseWidget), and never call the setter after they are freed.
+local function scrub(dialog)
+    if type(dialog) ~= "table" or not dialog.xray_secret_input then return end
+    if not dialog.xray_freed and dialog.setInputText then pcall(dialog.setInputText, dialog, "", nil, false) end
+    dialog.input = ""
+end
+
+local function guard(dialog)
+    local base = dialog.handleEvent
+    dialog.handleEvent = function(widget, event, ...)
+        local name = type(event) == "table" and (event.name or event.handler) or nil
+        if name == "CloseWidget" or name == "onCloseWidget" or name == "FlushSettings" or name == "onFlushSettings" then
+            scrub(dialog)
+        end
+        if base then return base(widget, event, ...) end
+    end
+end
+
+-- Any close we did not initiate invalidates the current flow.
+function M:track(dialog)
+    local base = dialog.onCloseWidget
+    dialog.onCloseWidget = function(widget, ...)
+        dialog.xray_freed = true
+        scrub(dialog)
+        if base then base(widget, ...) end
+        if self.dialog == dialog then
+            self.dialog = nil
+            self:cancel()
+        end
+    end
+    self.dialog = dialog
+end
+
 function M:cancel()
     self.generation = self.generation + 1
     local r = self.receiver
@@ -47,10 +81,18 @@ function M:cancel()
     if r then
         r.stopped = true
         if r.timer and UIManager.unschedule then UIManager:unschedule(r.timer) end
-        if r.session then pcall(self:transferService().cancel, self:transferService(), r.session) end
+        r.timer = nil
+        local session = r.session
         r.session = nil
-        if r.dialog then UIManager:close(r.dialog) end
+        if session then
+            local ok, svc = pcall(self.transferService, self)
+            if ok and svc and svc.cancel then pcall(svc.cancel, svc, session) end
+            if type(session) == "table" then session.url, session.secret = nil, nil end
+        end
     end
+    local d = self.dialog
+    self.dialog = nil
+    if d then scrub(d); UIManager:close(d) end
 end
 
 function M:showAccount()
@@ -61,14 +103,19 @@ function M:showAccount()
     local function close() UIManager:close(dialog) end
     local buttons = {
         {{ text = (enabled and "Turn off" or "Turn on") .. " TypeSafe Jev", enabled = has_key or enabled, callback = function()
-            close(); h:setTypeSafeEnabled(not enabled); self:showAccount()
+            close()
+            local ok, err = h:setTypeSafeEnabled(not enabled)
+            if not ok then self:showMessage(err or "Could not save TypeSafe settings.") return end
+            self:showAccount()
         end }},
         {{ text = "Enter key", callback = function() close(); self:showKeyInput() end }},
         {{ text = "Send key from phone", callback = function() close(); self:startPhone() end }},
     }
     if has_key then
         table.insert(buttons, {{ text = "Remove key", callback = function()
-            close(); h:clearTypeSafeKey(); self:showMessage("TypeSafe key removed.")
+            close()
+            local ok, err = h:clearTypeSafeKey()
+            self:showMessage(ok and "TypeSafe key removed." or (err or "Could not save TypeSafe settings."))
         end }})
     end
     table.insert(buttons, {{ text = "Close", callback = close }})
@@ -76,35 +123,36 @@ function M:showAccount()
         modal = true,
         title = "TypeSafe Jev (optional)\nKey: " .. (has_key and "saved" or "none")
             .. " | " .. (enabled and has_key and "On" or "Off")
-            .. "\nSends book metadata and entity names to TypeSafe. Billed separately.",
+            .. "\nSends book metadata and entity details to TypeSafe. Billed separately.",
         buttons = buttons,
     }
     UIManager:show(dialog)
 end
 
 function M:showKeyInput()
+    self:cancel()
+    local generation = self.generation
     local InputDialog = require("ui/widget/inputdialog")
     local dialog
-    local function scrub()
-        if dialog and dialog.setInputText then pcall(dialog.setInputText, dialog, "", nil, false) end
-        if dialog then dialog.input = "" end
-    end
     dialog = InputDialog:new{
         title = "TypeSafe API key",
         input = "",
         text_type = "password",
         allow_newline = false,
         buttons = {{
-            { text = "Cancel", callback = function() scrub(); UIManager:close(dialog) end },
+            { text = "Cancel", callback = function() self:cancel() end },
             { text = "Save", is_enter_default = true, callback = function()
+                if self.generation ~= generation or self.dialog ~= dialog then return end
                 local key = dialog:getInputText()
-                scrub(); UIManager:close(dialog)
+                self:cancel()
                 self:saveKey(key)
                 key = nil
             end },
         }},
     }
     dialog.xray_secret_input = true
+    guard(dialog)
+    self:track(dialog)
     UIManager:show(dialog)
     if dialog.onShowKeyboard then dialog:onShowKeyboard() end
 end
@@ -140,12 +188,13 @@ function M:startPhone()
         text = "Scan, paste your TypeSafe key, tap Send.\nIgnore the provider buttons on the page.",
         face = Font:getFace("cfont", 15), width = width, alignment = "center",
     }
-    receiver.dialog = ButtonDialog:new{
+    local dialog = ButtonDialog:new{
         modal = true,
         _added_widgets = { VerticalGroup:new(children) },
         buttons = {{{ text = "Cancel", callback = function() self:cancel() end }}},
     }
-    UIManager:show(receiver.dialog)
+    self:track(dialog)
+    UIManager:show(dialog)
     self:schedule(generation, receiver)
 end
 

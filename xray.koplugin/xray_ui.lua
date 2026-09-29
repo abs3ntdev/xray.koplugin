@@ -1331,6 +1331,7 @@ function M:closeAllMenus()
     if self.openai_account_ui then self.openai_account_ui:cancel() end
     if self.anthropic_account_ui then self.anthropic_account_ui:cancel() end
     if self.typesafe_ui then self.typesafe_ui:cancel() end
+    M.cancelTypeSafeReview(self)
     
     if self.bg_scan_handle and self.bg_scan_handle.cancel then
         pcall(function() self.bg_scan_handle:cancel() end)
@@ -2499,6 +2500,9 @@ function M:typeSafePairLabel(pair)
     return text .. ". You decide."
 end
 
+-- Covers the child's worst case (3 batches x 20 s) plus overhead.
+local MAX_TYPESAFE_POLLS = 75
+
 -- Ask TypeSafe to judge the existing candidate pairs, then re-enter the
 -- normal review walk. Returns true when the walk will resume asynchronously.
 function M:annotateDuplicatePairsWithTypeSafe(list, list_name, pairs_found)
@@ -2516,30 +2520,46 @@ function M:annotateDuplicatePairsWithTypeSafe(list, list_name, pairs_found)
     local DataStorage = require("datastorage")
     local result_file = string.format("%s/xray/typesafe_dupe_%d_%d.json",
         DataStorage:getSettingsDir(), os.time(), math.random(1000, 9999))
+    -- Abort any older review (and its child) before starting a new one.
+    self:cancelTypeSafeReview()
     local pid = self.ai_helper:annotateDuplicatePairsAsync(
         { title = props.title, author = props.authors, entity_type = list_name }, items, result_file)
     if not pid then return false end
     local InfoMessage = require("ui/widget/infomessage")
-    local wait_msg = InfoMessage:new{ text = "TypeSafe Jev is reviewing candidates...", timeout = 60 }
+    local wait_msg = InfoMessage:new{ text = "TypeSafe Jev is reviewing candidates...", timeout = 80 }
+    -- One owned review at a time. Menu close, a newer review or a stale
+    -- result aborts it without reopening the walk.
+    local review = { pid = pid, result_file = result_file, wait_msg = wait_msg }
+    self.typesafe_review = review
     UIManager:show(wait_msg)
     local polls = 0
-    local function resume()
-        UIManager:close(wait_msg)
-        if self.destroyed or not self.ui or not self.ui.document then return end
-        self:walkDuplicatePairs(list, list_name, pairs_found)
+    local function live()
+        return self.typesafe_review == review and not review.cancelled
+            and not self.destroyed and self.ui and self.ui.document
     end
     local function poll()
-        if self.destroyed or not self.ui or not self.ui.document then
-            pcall(self.ai_helper.cancelAsyncChild, self.ai_helper, pid)
-            UIManager:close(wait_msg)
+        review.timer = nil
+        if not live() then
+            if self.typesafe_review == review then self:cancelTypeSafeReview() end
             return
         end
         polls = polls + 1
-        local data = self.ai_helper:checkAsyncResult(result_file, pid)
+        local data, err_code = self.ai_helper:checkAsyncResult(result_file, pid)
+        if not live() then
+            if self.typesafe_review == review then self:cancelTypeSafeReview() end
+            return
+        end
         if data == nil then
-            if polls < 45 then UIManager:scheduleIn(1, poll); return end
-            pcall(self.ai_helper.cancelAsyncChild, self.ai_helper, pid)
+            if polls < MAX_TYPESAFE_POLLS then
+                review.timer = poll
+                UIManager:scheduleIn(1, poll)
+                return
+            end
             self:log("XRayPlugin: TypeSafe duplicate review timed out")
+            pcall(self.ai_helper.cancelAsyncChild, self.ai_helper, pid)
+        elseif data == false and err_code == "error_stale" then
+            self:cancelTypeSafeReview()
+            return
         elseif type(data) == "table" and type(data.typesafe_annotations) == "table" then
             for i, pair in ipairs(pairs_found) do
                 local ann = data.typesafe_annotations[tostring(i)]
@@ -2550,10 +2570,29 @@ function M:annotateDuplicatePairsWithTypeSafe(list, list_name, pairs_found)
         else
             self:log("XRayPlugin: TypeSafe duplicate review unavailable")
         end
-        resume()
+        self.typesafe_review = nil
+        UIManager:close(wait_msg)
+        self:walkDuplicatePairs(list, list_name, pairs_found)
     end
+    review.timer = poll
     UIManager:scheduleIn(1, poll)
     return true
+end
+
+-- Abort an in-flight TypeSafe duplicate review: stop polling, cancel only the
+-- child this review owns, remove its result file, close its wait message.
+function M:cancelTypeSafeReview()
+    local review = self.typesafe_review
+    self.typesafe_review = nil
+    if not review then return end
+    review.cancelled = true
+    if review.timer and UIManager.unschedule then UIManager:unschedule(review.timer) end
+    review.timer = nil
+    if self.ai_helper and self.ai_helper.cancelAsyncChild then
+        pcall(self.ai_helper.cancelAsyncChild, self.ai_helper, review.pid)
+    end
+    if review.result_file then pcall(os.remove, review.result_file) end
+    if review.wait_msg then UIManager:close(review.wait_msg) end
 end
 
 function M:walkDuplicatePairs(list, list_name, pairs_found)

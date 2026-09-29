@@ -351,22 +351,28 @@ function AIHelper:isTypeSafeEnabled()
 end
 
 -- Save a TypeSafe key. Never changes typesafe_enabled or any generative route.
+-- Persist TypeSafe fields. On failure nothing changes on disk or in memory,
+-- so status never claims an unsaved key or opt-in.
+function AIHelper:_saveTypeSafe(updates)
+    -- saveSettings publishes to memory only after a successful atomic write.
+    if self:saveSettings(updates) == true then return true end
+    return false, "Could not save TypeSafe settings."
+end
+
 function AIHelper:setTypeSafeKey(key)
     local TS = self:_getTypeSafe()
     if type(key) == "string" then key = key:match("^%s*(.-)%s*$") end
     if not TS or not TS.validKey(key) then return false, "That does not look like a TypeSafe API key." end
-    self:saveSettings({ typesafe_api_key = key })
-    return true
+    return self:_saveTypeSafe({ typesafe_api_key = key })
 end
 
 function AIHelper:clearTypeSafeKey()
-    self:saveSettings({ typesafe_api_key = "", typesafe_enabled = false })
-    return true
+    return self:_saveTypeSafe({ typesafe_api_key = "", typesafe_enabled = false })
 end
 
 function AIHelper:setTypeSafeEnabled(enabled)
-    self:saveSettings({ typesafe_enabled = enabled == true })
-    return true
+    if enabled == true and not self:getTypeSafeKey() then return false, "Add a TypeSafe key first." end
+    return self:_saveTypeSafe({ typesafe_enabled = enabled == true })
 end
 
 -- Build a pinned TypeSafe request, or nil when not opted in / invalid.
@@ -2251,31 +2257,45 @@ function AIHelper:saveSettings(new_settings, keys_to_delete)
     end
     if not ok or type(lfs) ~= "table" then
         self:log("AIHelper: saveSettings skipped (lfs missing)")
-        return
+        return false
     end
     if lfs.attributes(xray_dir, "mode") ~= "directory" then
         lfs.mkdir(xray_dir)
     end
 
     
+    -- Stage a candidate, write it to a temp file, then rename over the old
+    -- file. Memory (self.settings, same table identity) is only updated after
+    -- the new file is durably in place, so a failed write leaves both the
+    -- previous file and in-memory settings intact.
     self.settings = self.settings or {}
+    local candidate = {}
+    for k, v in pairs(self.settings) do candidate[k] = v end
     if new_settings then
-        for k, v in pairs(new_settings) do
-            self.settings[k] = v
-        end
+        for k, v in pairs(new_settings) do candidate[k] = v end
     end
     if keys_to_delete then
-        for _, k in ipairs(keys_to_delete) do
-            self.settings[k] = nil
-        end
+        for _, k in ipairs(keys_to_delete) do candidate[k] = nil end
     end
-    
+
     local settings_file = xray_dir .. "/settings.json"
-    local f = io.open(settings_file, "w")
-    if f then
-        f:write(json.encode(self.settings))
-        f:close()
+    local tmp_file = settings_file .. ".tmp"
+    local ok_enc, encoded = pcall(json.encode, candidate)
+    if not ok_enc or type(encoded) ~= "string" then return false end
+    local f = io.open(tmp_file, "w")
+    if not f then return false end
+    local wrote = f:write(encoded) and true or false
+    local flushed = wrote and f:flush() and true or false
+    local closed = f:close() and true or false
+    if not (wrote and flushed and closed) or not os.rename(tmp_file, settings_file) then
+        pcall(os.remove, tmp_file)
+        return false
     end
+    for k in pairs(self.settings) do
+        if candidate[k] == nil then self.settings[k] = nil end
+    end
+    for k, v in pairs(candidate) do self.settings[k] = v end
+    return true
 end
 
 function AIHelper:loadLanguage()

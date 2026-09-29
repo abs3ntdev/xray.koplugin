@@ -269,7 +269,7 @@ function TS.pairBatches(book, items)
             spec.questions["p" .. i] = {
                 type = "score",
                 instructions = string.format(
-                    "In the book described by `book`, do `pairs[%d].entity_a` and `pairs[%d].entity_b` refer to the same %s? Similar or equal names alone do not prove identity; use descriptions and aliases.",
+                    "In the book described by `book`, do `pairs[%d].entity_a` and `pairs[%d].entity_b` refer to the same %s? Similar or equal names alone do not prove identity. Use only the supplied names, aliases and descriptions; do not rely on plot knowledge beyond them.",
                     slot, slot, state.book.entity_type),
                 criteria = TS.PAIR_LEVELS,
             }
