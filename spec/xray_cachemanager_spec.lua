@@ -75,6 +75,32 @@ describe("xray_cachemanager", function()
             assert.is_false(result)
         end)
 
+        it("keeps the previous cache when the final rename fails", function()
+            assert.is_true(cache_manager:saveCache(test_book, { characters = { { name = "Old" } } }))
+            local UIManager = require("ui/uimanager")
+            local old_sched, old_rename = UIManager.scheduleIn, os.rename
+            UIManager.scheduleIn = function(_, _, cb) cb() end
+            os.rename = function() return nil, "EIO" end
+            local result
+            cache_manager:asyncSaveCache(test_book, { characters = { { name = "New" } } }, function(res) result = res end)
+            UIManager.scheduleIn, os.rename = old_sched, old_rename
+            assert.is_false(result)
+            local loaded = cache_manager:loadCache(test_book)
+            assert.are.equal("Old", loaded.characters[1].name)
+        end)
+
+        it("atomically replaces the previous cache on success", function()
+            assert.is_true(cache_manager:saveCache(test_book, { characters = { { name = "Old" } } }))
+            local UIManager = require("ui/uimanager")
+            local old_sched = UIManager.scheduleIn
+            UIManager.scheduleIn = function(_, _, cb) cb() end
+            local result
+            cache_manager:asyncSaveCache(test_book, { characters = { { name = "New" } } }, function(res) result = res end)
+            UIManager.scheduleIn = old_sched
+            assert.is_true(result)
+            assert.are.equal("New", cache_manager:loadCache(test_book).characters[1].name)
+        end)
+
         it("handles circular references gracefully", function()
             local data = { name = "Alice" }
             data.self = data -- Circular reference

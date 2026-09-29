@@ -276,8 +276,14 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
 
             if coroutine.status(co) == "dead" then
                 local closed = pcall(function() assert(f:close()) end)
-                pcall(os.remove, cache_file)
+                -- POSIX rename atomically replaces the destination, so the
+                -- previous cache survives any close/rename failure. Only on
+                -- Windows (rename cannot overwrite) fall back to unlink+rename.
                 local renamed = closed and os.rename(temp_file, cache_file)
+                if closed and not renamed and package.config:sub(1, 1) == "\\" then
+                    pcall(os.remove, cache_file)
+                    renamed = os.rename(temp_file, cache_file)
+                end
                 cleanupSave()
                 if not renamed then
                     logger.warn("CacheManager: Could not finalize async cache write:", cache_file)
