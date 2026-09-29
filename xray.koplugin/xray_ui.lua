@@ -1271,6 +1271,7 @@ function M:closeAllMenus()
     -- Mark as cancelled to stop background tasks
     self.is_cancelled = true
     if self.openai_account_ui then self.openai_account_ui:cancel() end
+    if self.anthropic_account_ui then self.anthropic_account_ui:cancel() end
     
     if self.bg_scan_handle and self.bg_scan_handle.cancel then
         pcall(function() self.bg_scan_handle:cancel() end)
@@ -4741,6 +4742,10 @@ function M:showEnterKeyProviderDialog()
         UIManager:close(dlg)
         self:showOpenAIAccount()
     end }})
+    table.insert(buttons, {{ text = "Claude subscription (experimental) - account sign-in", callback = function()
+        UIManager:close(dlg)
+        self:showAnthropicAccount()
+    end }})
     table.insert(buttons, {
         {
             text = self.loc:t("cancel") or "Cancel",
@@ -4763,6 +4768,12 @@ function M:showOpenAIAccount()
     local AccountUI = require(plugin_path .. "xray_openai_account_ui")
     if not self.openai_account_ui then self.openai_account_ui = AccountUI:new(self) end
     self.openai_account_ui:showAccount()
+end
+
+function M:showAnthropicAccount()
+    local AccountUI = require(plugin_path .. "xray_anthropic_account_ui")
+    if not self.anthropic_account_ui then self.anthropic_account_ui = AccountUI:new(self) end
+    self.anthropic_account_ui:showAccount()
 end
 
 function M:promptProviderKeyEntry(provider, provider_name)
@@ -5336,6 +5347,17 @@ function M:getAPIKeysMenu()
         keep_menu_open = true,
         callback = function() self:showOpenAIAccount() end,
     })
+    table.insert(menu_items, {
+        text = "Claude subscription (experimental) - account",
+        text_func = function()
+            local ok, auth = pcall(require, plugin_path .. "xray_anthropic_auth")
+            local ok_status, status = false, nil
+            if ok and auth then ok_status, status = pcall(auth.getStatus, auth) end
+            return "Claude subscription (experimental) - " .. ((ok_status and status and status.connected) and "Connected" or "Not connected")
+        end,
+        keep_menu_open = true,
+        callback = function() self:showAnthropicAccount() end,
+    })
 
     -- Clear All Configured Keys button
     table.insert(menu_items, {
@@ -5361,11 +5383,16 @@ function M:getAPIKeysMenu()
                             is_enter_default = true,
                             callback = function()
                                 UIManager:close(confirm)
-                                self.ai_helper:clearAllAPIKeys()
-                                UIManager:show(InfoMessage:new{
-                                    text = self.loc:t("keys_cleared") or "All API keys cleared.",
-                                    timeout = 3
-                                })
+                                local cleared, clear_msg = self.ai_helper:clearAllAPIKeys()
+                                local failed = cleared == nil or cleared == false
+                                local shown = self.loc:t("keys_cleared") or "All API keys cleared."
+                                if failed then
+                                    if type(clear_msg) ~= "string" or #clear_msg > 160 or clear_msg:find("[\r\n]") then
+                                        clear_msg = "Sign-out failed."
+                                    end
+                                    shown = "API keys cleared, but: " .. clear_msg
+                                end
+                                UIManager:show(InfoMessage:new{ text = shown, timeout = failed and 6 or 3 })
                                 UIManager:setDirty(nil, "ui")
                             end,
                         },
@@ -5606,11 +5633,15 @@ function M:getProviderKeySubMenu(provider, provider_name)
                             is_enter_default = true,
                             callback = function()
                                 UIManager:close(confirm)
-                                self.ai_helper:clearProviderKey(provider)
-                                UIManager:show(InfoMessage:new{
-                                    text = string.format(self.loc:t("single_key_cleared") or "%s API key cleared.", provider_name),
-                                    timeout = 3
-                                })
+                                local cleared, clear_msg = self.ai_helper:clearProviderKey(provider)
+                                local shown = string.format(self.loc:t("single_key_cleared") or "%s API key cleared.", provider_name)
+                                if cleared == false then
+                                    if type(clear_msg) ~= "string" or #clear_msg > 160 or clear_msg:find("[\r\n]") then
+                                        clear_msg = "Sign-out failed."
+                                    end
+                                    shown = "Not fully cleared: " .. clear_msg
+                                end
+                                UIManager:show(InfoMessage:new{ text = shown, timeout = cleared == false and 6 or 3 })
                                 UIManager:setDirty(nil, "ui")
                             end,
                         },
@@ -5789,6 +5820,15 @@ function M:getAIModelSelectionMenu(setting_type)
             },
         },
         {
+            id = "anthropic_account",
+            display_name = "Claude subscription (experimental)",
+            models = {
+                { id = "claude-opus-5-5", cost = "subscription" },
+                { id = "claude-sonnet-5", cost = "subscription" },
+                { id = "claude-haiku-4-5", cost = "subscription" },
+            },
+        },
+        {
             id = "gemini",
             display_name = "Gemini",
             models = {
@@ -5878,6 +5918,15 @@ function M:getAIModelSelectionMenu(setting_type)
                                 local auth = require(plugin_path .. "xray_openai_auth")
                                 if not (auth:getStatus() or {}).connected then
                                     self:showOpenAIAccount()
+                                    return
+                                end
+                            end
+                            if provider_id == "anthropic_account" then
+                                local ok, auth = pcall(require, plugin_path .. "xray_anthropic_auth")
+                                local ok_status, status = false, nil
+                                if ok and auth then ok_status, status = pcall(auth.getStatus, auth) end
+                                if not (ok_status and status and status.connected) then
+                                    self:showAnthropicAccount()
                                     return
                                 end
                             end

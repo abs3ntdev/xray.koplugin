@@ -1321,6 +1321,24 @@ describe("xray_ui", function()
             assert.is_true(ok, "clear_all_keys callback failed: " .. tostring(err))
         end)
 
+        it("reports a failed subscription sign-out on clear-all instead of claiming success", function()
+            local items = plugin:getAPIKeysMenu()
+            local clear_item
+            for _, item in ipairs(items) do
+                if item.text:find("menu_clear_all_keys") or item.text:find("Clear All API Keys") then clear_item = item end
+            end
+            assert.is_not_nil(clear_item)
+            local old = plugin.ai_helper.clearAllAPIKeys
+            plugin.ai_helper.clearAllAPIKeys = function() return false, "Claude sign-out failed." end
+            clear_item.callback()
+            _G.ui_tracker.last_shown.args.buttons[1][2].callback()
+            local msg = _G.ui_tracker.last_shown.args.text
+            plugin.ai_helper.clearAllAPIKeys = old
+            assert.truthy(msg:find("API keys cleared, but"))
+            assert.truthy(msg:find("Claude sign%-out failed"))
+            assert.is_nil(msg:find("All API keys cleared"))
+        end)
+
         it("should validate all menu items in getProviderKeySubMenu have valid non-nil text and working clear callback", function()
             local items = plugin:getProviderKeySubMenu("gemini", "Google Gemini")
             assert.is_not_nil(items)

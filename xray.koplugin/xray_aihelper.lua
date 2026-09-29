@@ -94,6 +94,14 @@ local AIHelper = {
             oauth = true,
             model = "gpt-6-luna",
         },
+        -- Experimental, unofficial Claude subscription (OAuth PKCE login). Never
+        -- holds an api_key; credentials live only in xray_anthropic_auth's store.
+        anthropic_account = {
+            name = "Claude subscription (experimental)",
+            enabled = true,
+            oauth = true,
+            model = "claude-sonnet-5",
+        },
     },
     default_provider = nil,
     current_language = "en",
@@ -262,6 +270,11 @@ end
 -- Experimental ChatGPT subscription provider (openai_account)
 -- ---------------------------------------------------------------------------
 local OPENAI_ACCOUNT = "openai_account"
+local ANTHROPIC_ACCOUNT = "anthropic_account"
+
+-- Subscription providers: OAuth-only, verified transport, never paid fallback.
+local SUBSCRIPTION = { [OPENAI_ACCOUNT] = true, [ANTHROPIC_ACCOUNT] = true }
+local function isSubscription(provider_id) return SUBSCRIPTION[provider_id] == true end
 
 -- Lazy module accessors. Tests may inject self._openai_auth,
 -- self._secure_http and self._openai_responses. Nothing here touches the
@@ -287,6 +300,80 @@ function AIHelper:_getOpenAIResponses()
     return nil
 end
 
+function AIHelper:_getAnthropicAuth()
+    if self._anthropic_auth then return self._anthropic_auth end
+    local ok, mod = pcall(require, plugin_path .. "xray_anthropic_auth")
+    if ok and type(mod) == "table" then self._anthropic_auth = mod; return mod end
+    return nil
+end
+
+function AIHelper:_getAnthropicMessages()
+    if self._anthropic_messages then return self._anthropic_messages end
+    local ok, mod = pcall(require, plugin_path .. "xray_anthropic_messages")
+    if ok and type(mod) == "table" then self._anthropic_messages = mod; return mod end
+    return nil
+end
+
+-- Adapter module for a subscription provider (pure build/decode functions).
+function AIHelper:_getSubscriptionAdapter(provider_id)
+    if provider_id == OPENAI_ACCOUNT then return self:_getOpenAIResponses() end
+    if provider_id == ANTHROPIC_ACCOUNT then return self:_getAnthropicMessages() end
+    return nil
+end
+
+function AIHelper:getAnthropicAccountStatus()
+    local Auth = self:_getAnthropicAuth()
+    if not Auth or type(Auth.getStatus) ~= "function" then return { connected = false } end
+    local ok, status = pcall(Auth.getStatus, Auth)
+    if not ok or type(status) ~= "table" then return { connected = false } end
+    return { connected = status.connected == true, expires_at = status.expires_at }
+end
+
+-- Session id for Claude attribution headers. Random, per-process, not secret.
+function AIHelper:_anthropicSessionId()
+    if self._anthropic_session_id then return self._anthropic_session_id end
+    local f = io.open("/dev/urandom", "rb")
+    if not f then return nil end
+    local bytes = f:read(16)
+    f:close()
+    if not bytes or #bytes ~= 16 then return nil end
+    local hex = bytes:gsub(".", function(c) return string.format("%02x", c:byte()) end)
+    self._anthropic_session_id = string.format("%s-%s-4%s-a%s-%s",
+        hex:sub(1, 8), hex:sub(9, 12), hex:sub(14, 16), hex:sub(18, 20), hex:sub(21, 32))
+    return self._anthropic_session_id
+end
+
+-- Parent-only: may refresh/persist rotated tokens before any fork.
+function AIHelper:buildAnthropicAccountRequest(prompt, model, force_refresh)
+    local Auth = self:_getAnthropicAuth()
+    local Messages = self:_getAnthropicMessages()
+    if not Auth or not Messages then
+        return nil, "error_auth", "Claude subscription support is unavailable."
+    end
+    local ok, ctx, _, msg = pcall(Auth.getAccessContext, Auth, force_refresh == true)
+    if not ok then
+        return nil, "error_auth", "Claude sign-in could not be loaded. Reconnect your account."
+    end
+    if type(ctx) ~= "table" then
+        return nil, "error_auth", (type(msg) == "string" and msg) or "Sign in with Claude first."
+    end
+    local session_id = ctx.session_id or self:_anthropicSessionId()
+    return Messages.buildRequest({
+        model = model,
+        instructions = self:_openAIAccountInstructions(),
+        prompt = prompt,
+        access_token = ctx.access_token,
+        session_id = session_id,
+    })
+end
+
+function AIHelper:buildSubscriptionRequest(provider_id, prompt, model, force_refresh)
+    if provider_id == ANTHROPIC_ACCOUNT then
+        return self:buildAnthropicAccountRequest(prompt, model, force_refresh)
+    end
+    return self:buildOpenAIAccountRequest(prompt, model, force_refresh)
+end
+
 -- Safe status for UI/gating. Never performs network I/O, never returns tokens.
 function AIHelper:getOpenAIAccountStatus()
     local Auth = self:_getOpenAIAuth()
@@ -301,13 +388,16 @@ function AIHelper:isProviderConfigured(provider_id)
     if provider_id == OPENAI_ACCOUNT then
         return self:getOpenAIAccountStatus().connected
     end
+    if provider_id == ANTHROPIC_ACCOUNT then
+        return self:getAnthropicAccountStatus().connected
+    end
     local config = self.providers and self.providers[provider_id]
     return config ~= nil and config.api_key ~= nil and config.api_key ~= ""
 end
 
 function AIHelper:isSubscriptionPrimary()
     local primary = (self.settings and self.settings.primary_ai) or DEFAULT_AI.primary
-    return primary.provider == OPENAI_ACCOUNT
+    return isSubscription(primary.provider)
 end
 
 function AIHelper:_openAIAccountInstructions()
@@ -345,9 +435,11 @@ end
 -- pinned; any other URL is refused so tokens cannot leak to a custom endpoint.
 -- Returns code_num, body (safe to handle) or nil, err_code, safe_msg.
 function AIHelper:_performSecureRequest(req, timeout)
-    local Responses = self:_getOpenAIResponses()
+    -- The adapter is chosen by provider id and must pin the exact URL, so a
+    -- request cannot carry one provider's credentials to another endpoint.
+    local Adapter = type(req) == "table" and isSubscription(req.provider) and self:_getSubscriptionAdapter(req.provider) or nil
     local SecureHTTP = self:_getSecureHTTP()
-    if not Responses or not Responses.isPinnedRequest(req) then
+    if not Adapter or not Adapter.isPinnedRequest(req) then
         return nil, "error_api", "Refused to send subscription credentials to an unexpected endpoint."
     end
     if not SecureHTTP then
@@ -373,8 +465,8 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
 
     -- Billing policy: subscription-primary NEVER falls through to any paid API
     -- secondary, including when the subscription request cannot even be built.
-    if primary.provider == OPENAI_ACCOUNT then
-        local req, code, msg = self:buildOpenAIAccountRequest(prompt, self:resolveModel(primary.provider, primary.model))
+    if isSubscription(primary.provider) then
+        local req, code, msg = self:buildSubscriptionRequest(primary.provider, prompt, self:resolveModel(primary.provider, primary.model))
         if not req then return nil, code, msg end
         return { req }
     end
@@ -382,11 +474,11 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
     local requests = {}
     for _, ai in ipairs({ primary, secondary }) do
         local config = self.providers[ai.provider]
-        if ai.provider == OPENAI_ACCOUNT then
+        if isSubscription(ai.provider) then
             -- API-primary with an explicitly chosen subscription secondary: the
             -- subscription is not paid API usage, so keep it as the fallback.
-            if self:isProviderConfigured(OPENAI_ACCOUNT) then
-                local req = self:buildOpenAIAccountRequest(prompt, self:resolveModel(ai.provider, ai.model))
+            if self:isProviderConfigured(ai.provider) then
+                local req = self:buildSubscriptionRequest(ai.provider, prompt, self:resolveModel(ai.provider, ai.model))
                 if req then table.insert(requests, req) end
             end
         elseif config and config.api_key and config.api_key ~= "" then
@@ -622,6 +714,7 @@ function AIHelper:hasApiKey()
     if self.providers.custom1 and self.providers.custom1.api_key and self.providers.custom1.api_key ~= "" then return true end
     if self.providers.custom2 and self.providers.custom2.api_key and self.providers.custom2.api_key ~= "" then return true end
     if self:getOpenAIAccountStatus().connected then return true end
+    if self:getAnthropicAccountStatus().connected then return true end
     return false
 end
 
@@ -844,7 +937,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
         -- Any subscription-bound request is handled on the secure route. A
         -- subscription request missing its secure tag is refused outright so
         -- its credentials can never reach legacy HTTP.
-        local is_subscription = req.secure or req.provider == OPENAI_ACCOUNT
+        local is_subscription = req.secure or isSubscription(req.provider)
         if is_subscription and not req.secure then
             attempts = max_attempts
             ok, code, response_headers = nil, "SECURE_ERROR", {}
@@ -896,7 +989,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
         if is_subscription then
             -- Subscription route: strict SSE terminal + X-Ray JSON validation,
             -- safe error envelopes only (never raw bodies or tokens).
-            local Responses = self:_getOpenAIResponses()
+            local Responses = isSubscription(req.provider) and self:_getSubscriptionAdapter(req.provider) or nil
             local out_code, out_text
             if code_num == 200 and Responses then
                 local normalized, err_code, err_msg = Responses.normalizeStream(response_text)
@@ -914,7 +1007,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
                 end
                 out_code, out_text = code_num or 0, Responses.errorEnvelope(err_code, err_msg)
             else
-                out_code, out_text = 0, json.encode({ error = { code = "error_api", message = "ChatGPT subscription support is unavailable." } })
+                out_code, out_text = 0, json.encode({ error = { code = "error_api", message = "Subscription support is unavailable." } })
             end
             self:log(string.format("AIHelper Child: Subscription request finished with code %s", tostring(out_code)))
             -- The subscription outcome is always final: never fall through to
@@ -922,7 +1015,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
             local f = io.open(result_file, "w")
             if f then
                 f:write(tostring(out_code) .. "\n")
-                f:write(req.provider .. "\n")
+                f:write(tostring(req.provider) .. "\n")
                 f:write(out_text)
                 f:close()
             end
@@ -1297,7 +1390,7 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
         if response_text and #response_text > 0 then
             local s, err_data = pcall(json.decode, response_text)
             if s and type(err_data) == "table" and type(err_data.error) == "table" and err_data.error.message then
-                if provider == OPENAI_ACCOUNT then
+                if isSubscription(provider) then
                     -- Already a safe, user-facing message with a stable error code.
                     local sub_code = type(err_data.error.code) == "string" and err_data.error.code:match("^error_[%w_]+$")
                     return false, sub_code or "error_api", tostring(err_data.error.message)
@@ -2313,8 +2406,8 @@ function AIHelper:executeUnifiedRequest(prompt)
     local secondary = self.settings.secondary_ai or DEFAULT_AI.secondary
     
     -- Billing policy: subscription-primary never falls back to a paid secondary.
-    if primary.provider == OPENAI_ACCOUNT then
-        return self:callOpenAIAccount(prompt, self:resolveModel(primary.provider, primary.model))
+    if isSubscription(primary.provider) then
+        return self:callSubscription(primary.provider, prompt, self:resolveModel(primary.provider, primary.model))
     end
 
     local models_to_try = { primary, secondary }
@@ -2322,13 +2415,13 @@ function AIHelper:executeUnifiedRequest(prompt)
     
     for _, ai in ipairs(models_to_try) do
         local config = self.providers[ai.provider]
-        if ai.provider == OPENAI_ACCOUNT then
-            if self:isProviderConfigured(OPENAI_ACCOUNT) then
-                local result, _, err_msg = self:callOpenAIAccount(prompt, self:resolveModel(ai.provider, ai.model))
+        if isSubscription(ai.provider) then
+            if self:isProviderConfigured(ai.provider) then
+                local result, _, err_msg = self:callSubscription(ai.provider, prompt, self:resolveModel(ai.provider, ai.model))
                 if result then return result end
-                last_err = err_msg or "ChatGPT subscription request failed"
+                last_err = err_msg or "Subscription request failed"
             else
-                last_err = "Sign in with ChatGPT first."
+                last_err = (ai.provider == ANTHROPIC_ACCOUNT) and "Sign in with Claude first." or "Sign in with ChatGPT first."
             end
         elseif not config or not config.api_key or config.api_key == "" then
             self:log("AIHelper: Skipping " .. ai.provider .. " (" .. tostring(ai.model) .. ") - API Key missing")
@@ -2430,10 +2523,22 @@ end
 -- (before the Trapper subprocess). On a 401 we force exactly one parent-side
 -- refresh and retry once; any further failure asks the user to reconnect.
 function AIHelper:callOpenAIAccount(prompt, model, _retried)
-    local req, code, msg = self:buildOpenAIAccountRequest(prompt, model, _retried == true)
+    return self:callSubscription(OPENAI_ACCOUNT, prompt, model, _retried)
+end
+
+function AIHelper:callAnthropicAccount(prompt, model, _retried)
+    return self:callSubscription(ANTHROPIC_ACCOUNT, prompt, model, _retried)
+end
+
+-- Sync subscription call. Credential refresh (including the single 401 retry)
+-- happens only here in the parent; the subprocess only performs the request.
+function AIHelper:callSubscription(provider_id, prompt, model, _retried)
+    if not isSubscription(provider_id) then return nil, "error_api", "Unknown subscription provider." end
+    local label = (provider_id == ANTHROPIC_ACCOUNT) and "Claude" or "ChatGPT"
+    local req, code, msg = self:buildSubscriptionRequest(provider_id, prompt, model, _retried == true)
     if not req then return nil, code, msg end
-    local Responses = self:_getOpenAIResponses()
-    self:log("AIHelper: Starting ChatGPT subscription request for model: " .. tostring(req.model))
+    local Responses = self:_getSubscriptionAdapter(provider_id)
+    self:log("AIHelper: Starting " .. label .. " subscription request for model: " .. tostring(req.model))
 
     local function perform()
         return self:_performSecureRequest(req, 600)
@@ -2446,14 +2551,14 @@ function AIHelper:callOpenAIAccount(prompt, model, _retried)
     else
         status, body_or_code, err_msg = perform()
     end
-    self:log("AIHelper: ChatGPT subscription response code: " .. tostring(status))
+    self:log("AIHelper: " .. label .. " subscription response code: " .. tostring(status))
 
     if not status then
         return nil, body_or_code or "error_network", err_msg or "The secure connection failed."
     end
     if status == 401 and not _retried then
-        self:log("AIHelper: ChatGPT subscription 401; refreshing once in parent")
-        return self:callOpenAIAccount(prompt, model, true)
+        self:log("AIHelper: " .. label .. " subscription 401; refreshing once in parent")
+        return self:callSubscription(provider_id, prompt, model, true)
     end
     if status ~= 200 then
         return nil, Responses.classifyHttpError(status, body_or_code)
@@ -2464,7 +2569,7 @@ function AIHelper:callOpenAIAccount(prompt, model, _retried)
     if not cleaned then return nil, v_code, v_msg end
     local parsed, perr = self:parseAIResponse(cleaned)
     if parsed then return parsed end
-    return nil, "error_parse", "ChatGPT response was not valid X-Ray JSON."
+    return nil, "error_parse", label .. " response was not valid X-Ray JSON."
 end
 
 function AIHelper:callClaude(prompt, config, current_model)
@@ -3177,6 +3282,11 @@ function AIHelper:validateProviderKey(provider_id)
         if not st.connected then return { ok = false, not_configured = true, error = "Not signed in" } end
         return { ok = true, latency_ms = 0 }
     end
+    if provider_id == ANTHROPIC_ACCOUNT then
+        local st = self:getAnthropicAccountStatus()
+        if not st.connected then return { ok = false, not_configured = true, error = "Not signed in" } end
+        return { ok = true, latency_ms = 0 }
+    end
     local key = prov.api_key or ""
     if #key == 0 then
         return { ok = false, not_configured = true, error = "No key configured" }
@@ -3301,8 +3411,19 @@ function AIHelper:clearAllAPIKeys()
         custom2_is_reasoning = false,
         welcome_wizard_dismissed = false,
     }
-    -- 0. Sign out of the ChatGPT subscription (dedicated OAuth store only)
-    self:_logoutOpenAIAccount()
+    -- 0. Sign out of both subscriptions (dedicated OAuth stores only). Both are
+    -- attempted; API keys are still wiped, but success is not reported unless
+    -- every sign-out succeeded.
+    -- An account that reports no saved credential (or whose runtime/store is
+    -- unavailable) is skipped so API-only users are not blocked and no auth
+    -- metadata is created. Explicit per-provider sign-out always runs logout.
+    local ok_openai, err_openai, ok_claude, err_claude = true, nil, true, nil
+    if self:getOpenAIAccountStatus().connected then
+        ok_openai, err_openai = self:_logoutOpenAIAccount()
+    end
+    if self:getAnthropicAccountStatus().connected then
+        ok_claude, err_claude = self:_logoutAnthropicAccount()
+    end
 
     -- 1. Wipe UI settings
     self:saveSettings(updates)
@@ -3329,6 +3450,12 @@ function AIHelper:clearAllAPIKeys()
 
     -- 4. Reinitialize in-memory state
     self:init(self.path)
+    if ok_openai ~= true or ok_claude ~= true then
+        local parts = {}
+        if ok_openai ~= true then parts[#parts + 1] = (type(err_openai) == "string" and err_openai) or "ChatGPT sign-out failed." end
+        if ok_claude ~= true then parts[#parts + 1] = (type(err_claude) == "string" and err_claude) or "Claude sign-out failed." end
+        return false, "API keys were cleared, but a subscription sign-out failed: " .. table.concat(parts, " ")
+    end
     return true
 end
 
@@ -3341,12 +3468,27 @@ function AIHelper:_logoutOpenAIAccount()
     return true
 end
 
+function AIHelper:_logoutAnthropicAccount()
+    local Auth = self:_getAnthropicAuth()
+    if not Auth or type(Auth.logout) ~= "function" then return true end
+    local ok, res, _, msg = pcall(Auth.logout, Auth)
+    if not ok then return nil, "Claude sign-out failed." end
+    if not res then return nil, msg end
+    return true
+end
+
 function AIHelper:clearProviderKey(provider_id)
     if not provider_id then return false end
     if provider_id == OPENAI_ACCOUNT then
         -- OAuth credentials never enter legacy settings/backup/config files.
-        local ok = self:_logoutOpenAIAccount()
-        return ok == true
+        local ok, msg = self:_logoutOpenAIAccount()
+        if ok == true then return true end
+        return false, (type(msg) == "string" and msg) or "ChatGPT sign-out failed."
+    end
+    if provider_id == ANTHROPIC_ACCOUNT then
+        local ok, msg = self:_logoutAnthropicAccount()
+        if ok == true then return true end
+        return false, (type(msg) == "string" and msg) or "Claude sign-out failed."
     end
     local updates = {
         [provider_id .. "_api_key"] = "",
@@ -3389,4 +3531,3 @@ function AIHelper:clearProviderKey(provider_id)
 end
 
 return AIHelper
-
