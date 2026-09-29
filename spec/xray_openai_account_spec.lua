@@ -133,7 +133,7 @@ describe("AIHelper openai_account provider", function()
         it("forwards Sol and Astra unchanged", function()
             AIHelper.settings.secondary_ai = nil
             AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
-            for _, model in ipairs({ "gpt-6-sol", "gpt-6-astra" }) do
+            for _, model in ipairs({ "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra" }) do
                 AIHelper.settings.primary_ai.model = model
                 local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
                 assert.are.equal(2, #reqs)
@@ -143,6 +143,20 @@ describe("AIHelper openai_account provider", function()
                 assert.are.equal(model, json.decode(reqs[1].body).model)
                 assert.are.equal(0, #generic_calls)
             end
+        end)
+
+        it("serializes Sol 6.1 from a secondary subscription slot with valid effort", function()
+            AIHelper.settings.primary_ai = { provider = "gemini", model = "gemini-2.5-flash" }
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6.1-sol" }
+            AIHelper.settings.reasoning_effort = "minimal"
+            local reqs = AIHelper:buildComprehensiveRequest(nil, nil, nil, "prompt")
+            assert.are.equal("secondary", reqs[2].slot)
+            assert.are.equal(Responses.ENDPOINT, reqs[2].url)
+            assert.is_true(reqs[2].secure)
+            local body = json.decode(reqs[2].body)
+            assert.are.equal("gpt-6.1-sol", body.model)
+            assert.are.equal("low", body.reasoning.effort)
+            assert.is_nil(body.response_format)
         end)
 
         it("ignores a custom endpoint configured on the provider", function()

@@ -54,19 +54,42 @@ describe("xray_ui", function()
             plugin.ai_helper.setUnifiedModel = function(_, kind, provider, model)
                 chosen = { kind, provider, model }
             end
-            local picker = plugin:getAIModelSelectionMenu("primary")
-            local subscription
-            for _, item in ipairs(picker) do
-                if item.text == "ChatGPT subscription (experimental)" then subscription = item end
+            for _, slot in ipairs({ "primary", "secondary" }) do
+                local picker = plugin:getAIModelSelectionMenu(slot)
+                local subscription
+                for _, item in ipairs(picker) do
+                    if item.text == "ChatGPT subscription (experimental)" then subscription = item end
+                end
+                assert.is_not_nil(subscription)
+                local models = subscription.sub_item_table_func()
+                assert.are.equal(4, #models)
+                for i, id in ipairs({ "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra" }) do
+                    assert.truthy(models[i].text:find(id, 1, true))
+                    chosen = nil
+                    models[i].callback()
+                    assert.are.same({ slot, "openai_account", id }, chosen)
+                end
             end
-            assert.is_not_nil(subscription)
-            local models = subscription.sub_item_table_func()
-            assert.are.equal(3, #models)
-            for i, id in ipairs({ "gpt-6-luna", "gpt-6-sol", "gpt-6-astra" }) do
-                assert.truthy(models[i].text:find(id, 1, true))
-                chosen = nil
-                models[i].callback()
-                assert.are.same({ "primary", "openai_account", id }, chosen)
+        end)
+
+        it("selects Sol 6.1 from the API picker in either slot", function()
+            local selected = {}
+            plugin.ai_helper.setUnifiedModel = function(_, kind, provider, model)
+                selected[#selected + 1] = { kind, provider, model }
+            end
+            for _, slot in ipairs({ "primary", "secondary" }) do
+                local api_menu
+                for _, item in ipairs(plugin:getAIModelSelectionMenu(slot)) do
+                    if item.text == "ChatGPT" then api_menu = item end
+                end
+                assert.is_not_nil(api_menu)
+                local sol
+                for _, item in ipairs(api_menu.sub_item_table_func()) do
+                    if item.text:find("gpt-6.1-sol", 1, true) then sol = item end
+                end
+                assert.is_not_nil(sol)
+                sol.callback()
+                assert.are.same({ slot, "chatgpt", "gpt-6.1-sol" }, selected[#selected])
             end
         end)
     end)
@@ -1237,8 +1260,9 @@ describe("xray_ui", function()
 
             local chatgpt_menu = chatgpt_item.sub_item_table_func()
             assert.is_not_nil(chatgpt_menu[1].text:find("gpt%-6%-luna"))
-            assert.is_not_nil(chatgpt_menu[2].text:find("gpt%-5%.6%-terra"))
-            assert.is_not_nil(chatgpt_menu[3].text:find("gpt%-5%.6%-luna"))
+            assert.is_not_nil(chatgpt_menu[2].text:find("gpt%-6%.1%-sol"))
+            assert.is_not_nil(chatgpt_menu[3].text:find("gpt%-5%.6%-terra"))
+            assert.is_not_nil(chatgpt_menu[4].text:find("gpt%-5%.6%-luna"))
             local original = plugin.ai_helper.setUnifiedModel
             local selection
             plugin.ai_helper.setUnifiedModel = function(_, setting, provider, model)

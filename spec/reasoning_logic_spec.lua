@@ -71,6 +71,21 @@ describe("AI Reasoning Logic", function()
     end)
 
     describe("buildComprehensiveRequest with explicit reasoning", function()
+        it("serializes Sol 6.1 in the async API path without unsupported efforts", function()
+            AIHelper.settings.primary_ai = { provider = "chatgpt", model = "gpt-6.1-sol" }
+            for _, case in ipairs({ { false, "medium" }, { "minimal", "low" }, { "none", "low" }, { "max", "max" } }) do
+                AIHelper.settings.reasoning_effort = case[1] or nil
+                local body = json.decode(AIHelper:buildComprehensiveRequest("Title", "Author", {})[1].body)
+                assert.are.equal("gpt-6.1-sol", body.model)
+                assert.are.equal("developer", body.messages[1].role)
+                assert.are.equal(case[2], body.reasoning_effort)
+                assert.is_nil(body.response_format)
+                assert.are.equal(32000, body.max_completion_tokens)
+                assert.is_nil(body.temperature)
+                assert.is_nil(body.top_p)
+            end
+        end)
+
         it("should include thinkingLevel for Gemini 3", function()
             AIHelper.settings.primary_ai = { provider = "gemini", model = "gemini-3.0-thinking" }
             AIHelper.settings.reasoning_effort = "high"
@@ -153,6 +168,28 @@ describe("AI Reasoning Logic", function()
     end)
 
     describe("callChatGPT payload", function()
+        it("serializes Sol 6.1 with its supported default and minimum reasoning efforts", function()
+            local original = AIHelper.makeRequest
+            local captured
+            AIHelper.makeRequest = function(_, _, _, payload)
+                captured = json.decode(payload)
+                return nil, 400, "{}"
+            end
+            for _, case in ipairs({ { false, "medium" }, { "minimal", "low" }, { "max", "max" } }) do
+                AIHelper.settings.reasoning_effort = case[1] or nil
+                local ok = pcall(function()
+                    AIHelper:callChatGPT("Prompt", { api_key = "test_key" }, "gpt-6.1-sol")
+                end)
+                assert.is_true(ok)
+                assert.are.equal("gpt-6.1-sol", captured.model)
+                assert.are.equal("developer", captured.messages[1].role)
+                assert.are.equal(case[2], captured.reasoning_effort)
+                assert.is_nil(captured.response_format)
+                assert.are.equal(32000, captured.max_completion_tokens)
+            end
+            AIHelper.makeRequest = original
+        end)
+
         it("should serialize gpt-6-luna using the modern protocol without making a network call", function()
             local original = AIHelper.makeRequest
             local captured

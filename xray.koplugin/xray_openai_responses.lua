@@ -57,7 +57,9 @@ function Responses.buildRequest(opts)
         text = { verbosity = "medium" },
     }
     if opts.reasoning_effort and VALID_EFFORTS[opts.reasoning_effort] then
-        body.reasoning = { effort = opts.reasoning_effort, summary = "auto" }
+        local effort = opts.reasoning_effort
+        if model == "gpt-6.1-sol" and effort == "minimal" then effort = "low" end
+        body.reasoning = { effort = effort, summary = "auto" }
     end
 
     local headers = {

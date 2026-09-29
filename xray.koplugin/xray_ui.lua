@@ -5790,6 +5790,7 @@ function M:getAIModelSelectionMenu(setting_type)
             models = {
                 { id = "gpt-6-luna", cost = "subscription" },
                 { id = "gpt-6-sol", cost = "subscription" },
+                { id = "gpt-6.1-sol", cost = "subscription" },
                 { id = "gpt-6-astra", cost = "subscription" },
             },
         },
@@ -5820,6 +5821,7 @@ function M:getAIModelSelectionMenu(setting_type)
             display_name = "ChatGPT",
             models = {
                 { id = "gpt-6-luna", cost = "paid" },
+                { id = "gpt-6.1-sol", cost = "paid" },
                 { id = "gpt-5.6-terra", cost = "paid" },
                 { id = "gpt-5.6-luna", cost = "paid" },
                 { id = "gpt-5.5", cost = "paid" },

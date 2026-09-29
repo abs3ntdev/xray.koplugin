@@ -680,7 +680,10 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
                 if (ai.provider == "chatgpt" or ai.provider == "custom1" or ai.provider == "custom2")
                     and is_openai_reasoning then
                     local current_effort = self.settings and self.settings.reasoning_effort
-                    if current_effort then
+                    if current_effort or model == "gpt-6.1-sol" then
+                        if model == "gpt-6.1-sol" then
+                            current_effort = (current_effort == "minimal" or current_effort == "none") and "low" or (current_effort or "medium")
+                        end
                         req_body.reasoning_effort = current_effort
                         req_body.response_format = nil  -- incompatible with reasoning_effort
                         if current_effort == "high" then
@@ -2862,8 +2865,11 @@ function AIHelper:callChatGPT(prompt, config, current_model)
     -- When reasoning is active, drop response_format and rely on the system prompt's JSON instruction.
     -- Also raise max_completion_tokens: GPT-5 supports 128k output; at xhigh OpenAI recommends ~25k buffer,
     -- so 65k is a safe ceiling that leaves ample room for both reasoning and the X-Ray JSON.
-    if self.settings.reasoning_effort and is_openai_reasoning then
+    if (self.settings.reasoning_effort or model == "gpt-6.1-sol") and is_openai_reasoning then
         local effort = self.settings.reasoning_effort
+        if model == "gpt-6.1-sol" then
+            effort = (effort == "minimal" or effort == "none") and "low" or (effort or "medium")
+        end
         request_payload.reasoning_effort = effort
         request_payload.response_format = nil  -- incompatible with reasoning_effort
         if effort == "high" or effort == "xhigh" then
