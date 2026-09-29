@@ -327,6 +327,103 @@ function AIHelper:_getSubscriptionAdapter(provider_id)
     return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Optional TypeSafe Jev decision helper (never a generative provider).
+-- Requires BOTH an explicit opt-in setting and a separately saved key; having
+-- a key alone never enables it, and it never counts for hasApiKey().
+-- ---------------------------------------------------------------------------
+function AIHelper:_getTypeSafe()
+    if self._typesafe then return self._typesafe end
+    local ok, mod = pcall(require, plugin_path .. "xray_typesafe")
+    if ok and type(mod) == "table" then self._typesafe = mod; return mod end
+    return nil
+end
+
+function AIHelper:getTypeSafeKey()
+    local key = self.settings and self.settings.typesafe_api_key
+    local TS = self:_getTypeSafe()
+    if TS and TS.validKey(key) then return key end
+    return nil
+end
+
+function AIHelper:isTypeSafeEnabled()
+    return self.settings ~= nil and self.settings.typesafe_enabled == true and self:getTypeSafeKey() ~= nil
+end
+
+-- Save a TypeSafe key. Never changes typesafe_enabled or any generative route.
+function AIHelper:setTypeSafeKey(key)
+    local TS = self:_getTypeSafe()
+    if type(key) == "string" then key = key:match("^%s*(.-)%s*$") end
+    if not TS or not TS.validKey(key) then return false, "That does not look like a TypeSafe API key." end
+    self:saveSettings({ typesafe_api_key = key })
+    return true
+end
+
+function AIHelper:clearTypeSafeKey()
+    self:saveSettings({ typesafe_api_key = "", typesafe_enabled = false })
+    return true
+end
+
+function AIHelper:setTypeSafeEnabled(enabled)
+    self:saveSettings({ typesafe_enabled = enabled == true })
+    return true
+end
+
+-- Build a pinned TypeSafe request, or nil when not opted in / invalid.
+function AIHelper:_buildTypeSafeRequest(state, spec)
+    if not self:isTypeSafeEnabled() then return nil end
+    local TS = self:_getTypeSafe()
+    return TS and TS.buildRequest(self:getTypeSafeKey(), state, spec) or nil
+end
+
+-- One TypeSafe call over verified SecureHTTP only. Returns validated answers
+-- or nil, safe_code. Never logs keys, request or response bodies.
+function AIHelper:_performTypeSafe(req)
+    local TS = self:_getTypeSafe()
+    if not TS or not TS.isPinnedRequest(req) then return nil, "error_config" end
+    local SecureHTTP = self:_getSecureHTTP()
+    if not SecureHTTP then return nil, "error_api" end
+    local ok, a, b, c = pcall(SecureHTTP.request, SecureHTTP, req.url, "POST", req.headers, req.body, TS.TIMEOUT)
+    if not ok or a == nil then return nil, "error_api" end
+    local answers, code = TS.parseResponse(b, c, req.typesafe_spec)
+    if not answers then return nil, code end
+    return answers
+end
+
+-- Child-side handling of a TypeSafe request inside the ordinary async chain.
+-- Returns (code, text) to write as the final result, or nil to continue with
+-- the next (generative) request in the same cancellable child.
+function AIHelper:_runTypeSafeChild(req, requests, index)
+    local TS = self:_getTypeSafe()
+    local spec = req.typesafe_spec or {}
+    if spec.kind == "duplicates" then
+        -- Collect every batch of this chain into one annotation result.
+        local annotations, assessed = {}, 0
+        for j = index, #requests do
+            local r = requests[j]
+            if not (TS and TS.isPinnedRequest(r)) or (r.typesafe_spec or {}).kind ~= "duplicates" then break end
+            local answers, code = self:_performTypeSafe(r)
+            self:log("AIHelper Child: TypeSafe duplicate batch " .. tostring(j) .. " " .. (answers and "ok" or tostring(code)))
+            if answers then
+                for id, ans in pairs(answers) do
+                    local idx = tonumber(id:match("^p(%d+)$"))
+                    if idx then
+                        annotations[tostring(idx)] = { verdict = TS.pairVerdict(ans), score = ans.score, confidence = ans.confidence }
+                        assessed = assessed + 1
+                    end
+                end
+            end
+        end
+        return 200, json.encode({ typesafe_annotations = annotations, assessed = assessed })
+    end
+    local answers, code = self:_performTypeSafe(req)
+    local decision = answers and TS.decideBookType(answers)
+    self:log("AIHelper Child: TypeSafe book type " .. (decision and "decided" or ("no decision (" .. tostring(code or "uncertain") .. ")")))
+    if decision then return 200, json.encode(decision) end
+    if index == #requests then return 0, json.encode({ error = { code = code or "error_uncertain", message = "TypeSafe was not confident." } }) end
+    return nil
+end
+
 function AIHelper:getAnthropicAccountStatus()
     local Auth = self:_getAnthropicAuth()
     if not Auth or type(Auth.getStatus) ~= "function" then return { connected = false } end
@@ -954,6 +1051,20 @@ function AIHelper:_runChildRequests(request_params, result_file)
 
     local success_found = false
     for i, req in ipairs(requests) do
+        if type(req) == "table" and req.provider == "typesafe" then
+            -- Specialist decision step; never legacy HTTP, never a generic slot.
+            local out_code, out_text = self:_runTypeSafeChild(req, requests, i)
+            if out_code then
+                local f = io.open(result_file, "w")
+                if f then
+                    f:write(tostring(out_code) .. "\ntypesafe#" .. tostring(i) .. "\n" .. out_text)
+                    f:close()
+                end
+                if out_code == 200 then success_found = true end
+                break
+            end
+            goto continue_requests
+        end
         self:log(string.format("AIHelper Child: Sending request %d/%d to %s (%s)", i, #requests, req.provider, req.model or "default"))
 
         local ok, code, response_headers, status, response_text, code_num
@@ -1440,6 +1551,14 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
     end
 
     local code_num = tonumber(code_str)
+    if provider == "typesafe" then
+        -- Already validated and reduced in the child; only safe fields exist.
+        local ok_ts, ts_data = pcall(json.decode, response_text or "")
+        if code_num == 200 and ok_ts and type(ts_data) == "table" then return ts_data end
+        local ts_code = ok_ts and type(ts_data) == "table" and type(ts_data.error) == "table"
+            and type(ts_data.error.code) == "string" and ts_data.error.code:match("^error_[%w_]+$")
+        return false, ts_code or "error_api", "TypeSafe decision unavailable."
+    end
     if code_num ~= 200 or not response_text or #response_text == 0 then
         -- Surface the provider's own error message (Gemini/OpenAI/OpenRouter/
         -- Anthropic all use {"error": {"message": ...}}), so failures like an
@@ -3209,6 +3328,26 @@ function AIHelper:findDuplicatesAsync(title, author, entities, entity_type_label
     return pid
 end
 
+-- Start an async TypeSafe review of existing duplicate candidates.
+-- items: array of { primary_item, secondary_item }. Returns pid, total_sent or
+-- nil when not opted in or nothing can be sent. Never adds or removes pairs.
+function AIHelper:annotateDuplicatePairsAsync(book, items, result_file)
+    if not self:isTypeSafeEnabled() or type(items) ~= "table" or #items == 0 then return nil end
+    local TS = self:_getTypeSafe()
+    local requests, sent = {}, 0
+    for _, batch in ipairs(TS.pairBatches(book, items)) do
+        local req = self:_buildTypeSafeRequest(batch.state, batch.spec)
+        if req then
+            requests[#requests + 1] = req
+            sent = sent + #batch.indexes
+        end
+    end
+    if #requests == 0 then return nil end
+    local pid = self:makeRequestAsync(requests, result_file)
+    if not pid then return nil end
+    return pid, sent
+end
+
 function AIHelper:detectBookTypeAsync(title, author, series, description, result_file)
     if not self.prompts then self:loadLanguage() end
     local template = self.prompts.book_type_detect
@@ -3224,6 +3363,17 @@ function AIHelper:detectBookTypeAsync(title, author, series, description, result
 
     local requests, error_code, error_msg = self:buildComprehensiveRequest(nil, nil, nil, prompt)
     if not requests then return nil, error_code or "error_build", error_msg or "Failed to build request" end
+
+    -- Opt-in TypeSafe decision first, in the same cancellable child chain.
+    -- An uncertain or failed judgment falls through to the generative routes.
+    local TS = self:isTypeSafeEnabled() and self:_getTypeSafe()
+    if TS then
+        local ts_req = self:_buildTypeSafeRequest(TS.bookTypeState(title, author, series, description), TS.bookTypeSpec())
+        if ts_req then
+            if requests.url then requests = { requests } end
+            table.insert(requests, 1, ts_req)
+        end
+    end
 
     local pid = self:makeRequestAsync(requests, result_file)
     return pid
@@ -3478,6 +3628,8 @@ function AIHelper:clearAllAPIKeys()
         custom2_endpoint = "",
         custom2_model = "",
         custom2_is_reasoning = false,
+        typesafe_api_key = "",
+        typesafe_enabled = false,
         welcome_wizard_dismissed = false,
     }
     -- 0. Sign out of both subscriptions (dedicated OAuth stores only). Both are

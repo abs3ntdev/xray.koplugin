@@ -1330,6 +1330,7 @@ function M:closeAllMenus()
     self.is_cancelled = true
     if self.openai_account_ui then self.openai_account_ui:cancel() end
     if self.anthropic_account_ui then self.anthropic_account_ui:cancel() end
+    if self.typesafe_ui then self.typesafe_ui:cancel() end
     
     if self.bg_scan_handle and self.bg_scan_handle.cancel then
         pcall(function() self.bg_scan_handle:cancel() end)
@@ -2480,6 +2481,81 @@ function M:filterValidDuplicatePairs(list, pairs)
     return filtered
 end
 
+-- Visible Jev judgment for a candidate pair (annotation only; never merges,
+-- filters or reorders). Unassessed pairs are labelled honestly.
+function M:typeSafePairLabel(pair)
+    local ts = type(pair) == "table" and pair.typesafe
+    if type(ts) ~= "table" then return nil end
+    local names = {
+        same = "likely same",
+        different = "likely different",
+        uncertain = "uncertain",
+        not_assessed = "not assessed",
+    }
+    local text = "TypeSafe Jev: " .. (names[ts.verdict] or "not assessed")
+    if ts.verdict ~= "not_assessed" and type(ts.confidence) == "number" then
+        text = text .. string.format(" (confidence %d%%)", math.floor(ts.confidence * 100 + 0.5))
+    end
+    return text .. ". You decide."
+end
+
+-- Ask TypeSafe to judge the existing candidate pairs, then re-enter the
+-- normal review walk. Returns true when the walk will resume asynchronously.
+function M:annotateDuplicatePairsWithTypeSafe(list, list_name, pairs_found)
+    local items = {}
+    for i, pair in ipairs(pairs_found) do
+        pair.typesafe = { verdict = "not_assessed" }
+        local a, b
+        for _, it in ipairs(list) do
+            if it.name and it.name:lower() == (pair.primary or ""):lower() then a = it end
+            if it.name and it.name:lower() == (pair.secondary or ""):lower() then b = it end
+        end
+        items[i] = { a or { name = pair.primary }, b or { name = pair.secondary } }
+    end
+    local props = (self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps()) or {}
+    local DataStorage = require("datastorage")
+    local result_file = string.format("%s/xray/typesafe_dupe_%d_%d.json",
+        DataStorage:getSettingsDir(), os.time(), math.random(1000, 9999))
+    local pid = self.ai_helper:annotateDuplicatePairsAsync(
+        { title = props.title, author = props.authors, entity_type = list_name }, items, result_file)
+    if not pid then return false end
+    local InfoMessage = require("ui/widget/infomessage")
+    local wait_msg = InfoMessage:new{ text = "TypeSafe Jev is reviewing candidates...", timeout = 60 }
+    UIManager:show(wait_msg)
+    local polls = 0
+    local function resume()
+        UIManager:close(wait_msg)
+        if self.destroyed or not self.ui or not self.ui.document then return end
+        self:walkDuplicatePairs(list, list_name, pairs_found)
+    end
+    local function poll()
+        if self.destroyed or not self.ui or not self.ui.document then
+            pcall(self.ai_helper.cancelAsyncChild, self.ai_helper, pid)
+            UIManager:close(wait_msg)
+            return
+        end
+        polls = polls + 1
+        local data = self.ai_helper:checkAsyncResult(result_file, pid)
+        if data == nil then
+            if polls < 45 then UIManager:scheduleIn(1, poll); return end
+            pcall(self.ai_helper.cancelAsyncChild, self.ai_helper, pid)
+            self:log("XRayPlugin: TypeSafe duplicate review timed out")
+        elseif type(data) == "table" and type(data.typesafe_annotations) == "table" then
+            for i, pair in ipairs(pairs_found) do
+                local ann = data.typesafe_annotations[tostring(i)]
+                if type(ann) == "table" and (ann.verdict == "same" or ann.verdict == "different" or ann.verdict == "uncertain") then
+                    pair.typesafe = { verdict = ann.verdict, confidence = tonumber(ann.confidence) }
+                end
+            end
+        else
+            self:log("XRayPlugin: TypeSafe duplicate review unavailable")
+        end
+        resume()
+    end
+    UIManager:scheduleIn(1, poll)
+    return true
+end
+
 function M:walkDuplicatePairs(list, list_name, pairs_found)
     local InfoMessage = require("ui/widget/infomessage")
     local ButtonDialog = require("ui/widget/buttondialog")
@@ -2514,6 +2590,11 @@ function M:walkDuplicatePairs(list, list_name, pairs_found)
     end
 
     -- Walk through pairs one at a time
+    if not (pairs_found[1] and pairs_found[1].typesafe) and self.ai_helper and self.ai_helper.isTypeSafeEnabled
+        and self.ai_helper:isTypeSafeEnabled() then
+        if self:annotateDuplicatePairsWithTypeSafe(list, list_name, pairs_found) then return end
+    end
+
     local pair_idx = 1
     local merge_count = 0
 
@@ -2581,6 +2662,8 @@ function M:walkDuplicatePairs(list, list_name, pairs_found)
             self.loc:t("reason") or "Reason",
             pair.reason or "Similar entries"
         )
+        local jev_line = self:typeSafePairLabel(pair)
+        if jev_line then confirm_text = confirm_text .. "\n" .. jev_line end
 
         local confirm_dialog
         confirm_dialog = ButtonDialog:new{
@@ -4750,6 +4833,12 @@ function M:showAnthropicAccount()
     self.anthropic_account_ui:showAccount()
 end
 
+function M:showTypeSafeSettings()
+    local TypeSafeUI = require(plugin_path .. "xray_typesafe_ui")
+    if not self.typesafe_ui then self.typesafe_ui = TypeSafeUI:new(self) end
+    self.typesafe_ui:showAccount()
+end
+
 function M:promptProviderKeyEntry(provider, provider_name)
     local Device = require("device")
     local InputDialog = require("ui/widget/inputdialog")
@@ -5331,6 +5420,16 @@ function M:getAPIKeysMenu()
         end,
         keep_menu_open = true,
         callback = function() self:showAnthropicAccount() end,
+    })
+    table.insert(menu_items, {
+        text = "TypeSafe Jev (optional decisions)",
+        text_func = function()
+            local h = self.ai_helper
+            local on = h and h.isTypeSafeEnabled and h:isTypeSafeEnabled()
+            return "TypeSafe Jev (optional decisions) - " .. (on and "On" or "Off")
+        end,
+        keep_menu_open = true,
+        callback = function() self:showTypeSafeSettings() end,
     })
 
     -- Clear All Configured Keys button

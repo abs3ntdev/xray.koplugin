@@ -19,6 +19,8 @@ local allowed = {
     ["auth.openai.com"] = true, ["chatgpt.com"] = true,
     ["platform.claude.com"] = true, ["api.anthropic.com"] = true,
     ["xray-setup.ultimatejimmy.workers.dev"] = true,
+    -- Optional TypeSafe Jev decision API (docs.typesafe.ai/api), exact host.
+    ["api.typesafe.ai"] = true,
 }
 local messages = {
     invalid_url = "Only official subscription HTTPS endpoints are allowed.",
