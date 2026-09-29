@@ -226,4 +226,127 @@ describe("xray_lookupmanager", function()
             assert.is_not_nil(called.term)
         end)
     end)
+
+    describe("word boundary and false positive prevention (Issue #140)", function()
+        before_each(function()
+            plugin.characters = {
+                { name = "Eo of Lykos", aliases = {"Eo"} },
+                { name = "Son", aliases = {} },
+                { name = "Io", aliases = {} },
+                { name = "Callisto", aliases = {} },
+                { name = "Rim", aliases = {} },
+                { name = "Red", aliases = {} },
+                { name = "Cat", aliases = {} },
+                { name = "Ян", aliases = {} },
+                { name = "Родион Раскольников", aliases = {"Раскольников"} },
+                { name = "Sherlock Holmes", aliases = {"Watson's friend"} },
+                { name = "Watson", aliases = {} },
+            }
+            plugin.terms = {
+                { name = "罗辑" },
+                { name = "هارون" }
+            }
+        end)
+
+        it("does not match names hidden inside other words", function()
+            -- "Matteo" contains "Eo"
+            assert.are.equal(0, #lm:lookupAll("Matteo"))
+            -- "person" and "Jefferson" contain "Son"
+            assert.are.equal(0, #lm:lookupAll("person"))
+            assert.are.equal(0, #lm:lookupAll("Jefferson"))
+            -- "Additionally" contains "Io"
+            assert.are.equal(0, #lm:lookupAll("Additionally"))
+            -- "All" contained inside "Callisto"
+            assert.are.equal(0, #lm:lookupAll("All"))
+            -- "Crime" contains "Rim"
+            assert.are.equal(0, #lm:lookupAll("Crime"))
+        end)
+
+        it("requires names shorter than 3 characters to match a whole word", function()
+            assert.are.equal(0, #lm:lookupAll("eon"))
+            assert.are.equal(0, #lm:lookupAll("ion"))
+            assert.are.equal(0, #lm:lookupAll("январь"))
+            assert.are.equal(0, #lm:lookupAll("баян"))
+
+            -- Matches whole words
+            local r_eo = lm:lookupAll("Eo")
+            assert.are.equal(1, #r_eo)
+            assert.are.equal("Eo of Lykos", r_eo[1].item.name)
+
+            local r_eo_phrase = lm:lookupAll("Eo was a martyr")
+            assert.are.equal(1, #r_eo_phrase)
+            assert.are.equal("Eo of Lykos", r_eo_phrase[1].item.name)
+
+            local r_yan = lm:lookupAll("Ян пошёл")
+            assert.are.equal(1, #r_yan)
+            assert.are.equal("Ян", r_yan[1].item.name)
+        end)
+
+        it("matches inflected words up to 3 run-on characters", function()
+            local r_reds = lm:lookupAll("Reds")
+            assert.are.equal(1, #r_reds)
+            assert.are.equal("Red", r_reds[1].item.name)
+
+            local r_rus1 = lm:lookupAll("Раскольникова")
+            assert.are.equal(1, #r_rus1)
+            assert.are.equal("Родион Раскольников", r_rus1[1].item.name)
+
+            local r_rus2 = lm:lookupAll("Раскольниковым")
+            assert.are.equal(1, #r_rus2)
+            assert.are.equal("Родион Раскольников", r_rus2[1].item.name)
+        end)
+
+        it("rejects run-ons longer than 3 characters", function()
+            assert.are.equal(0, #lm:lookupAll("redistribution"))
+            assert.are.equal(0, #lm:lookupAll("category"))
+        end)
+
+        it("recognizes punctuation and quotes as word breaks", function()
+            local r_watson = lm:lookupAll("Watson's journal")
+            assert.are.equal(1, #r_watson)
+            assert.are.equal("Watson", r_watson[1].item.name)
+        end)
+
+        it("preserves substring lookup for CJK and Arabic scripts", function()
+            local r_cjk = lm:lookupAll("罗辑在冥王星")
+            assert.are.equal(1, #r_cjk)
+            assert.are.equal("罗辑", r_cjk[1].item.name)
+
+            local r_ar = lm:lookupAll("وهارون")
+            assert.are.equal(1, #r_ar)
+            assert.are.equal("هارون", r_ar[1].item.name)
+        end)
+    end)
+
+    describe("stale _norm_aliases and _norm_name recovery (Issue #140)", function()
+        it("detects and rebuilds stale _norm_aliases loaded from cache", function()
+            plugin.characters = {
+                {
+                    name = "LowRed",
+                    aliases = { "Red", "Reds", "Helldivers", "LowColors" },
+                    _norm_aliases = { "red", "reds" } -- stale on disk
+                }
+            }
+
+            local results = lm:lookupAll("Helldivers")
+            assert.are.equal(1, #results)
+            assert.are.equal("LowRed", results[1].item.name)
+            assert.are.equal(95, results[1].score)
+        end)
+
+        it("detects and refreshes updated entity name", function()
+            local item = { name = "Initial Name", _norm_name = "initial name", _norm_name_src = "Initial Name" }
+            plugin.characters = { item }
+
+            local r1 = lm:lookupAll("Initial Name")
+            assert.are.equal(1, #r1)
+
+            -- Rename entity
+            item.name = "Updated Character"
+            local r2 = lm:lookupAll("Updated Character")
+            assert.are.equal(1, #r2)
+            assert.are.equal("Updated Character", r2[1].item.name)
+            assert.are.equal(100, r2[1].score)
+        end)
+    end)
 end)

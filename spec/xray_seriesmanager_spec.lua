@@ -233,6 +233,47 @@ describe("xray_seriesmanager", function()
             local loaded = manager:loadSeriesCache("nonexistent_slug")
             assert.is_nil(loaded)
         end)
+
+        it("saves atomically via temporary file and renames into place", function()
+            local test_data = {
+                books = {
+                    [1] = {
+                        title = "Atomic Test",
+                        characters = { { name = "Tester" } }
+                    }
+                }
+            }
+
+            local saved = manager:saveSeriesCache(test_slug, test_data)
+            assert.is_true(saved)
+
+            -- Confirm target file exists and .tmp file was removed
+            local f = io.open(test_cache_path, "r")
+            assert.is_not_nil(f)
+            if f then f:close() end
+
+            local f_tmp = io.open(test_cache_path .. ".tmp", "r")
+            assert.is_nil(f_tmp)
+        end)
+
+        it("cleans up temp file and returns false if serialization fails", function()
+            local test_data = {
+                books = { [1] = { title = "Broken" } }
+            }
+
+            -- Mock serializeToFile to throw an error
+            local orig_serialize = manager.serializeToFile
+            manager.serializeToFile = function() error("Serialization explosion") end
+
+            local saved = manager:saveSeriesCache(test_slug, test_data)
+            assert.is_false(saved)
+
+            -- Ensure .tmp was cleaned up
+            local f_tmp = io.open(test_cache_path .. ".tmp", "r")
+            assert.is_nil(f_tmp)
+
+            manager.serializeToFile = orig_serialize
+        end)
     end)
 
     describe("mergeSeriesContext", function()
@@ -420,6 +461,115 @@ describe("xray_seriesmanager", function()
             assert.are.equal(1, #loaded.books[1].characters)
             assert.are.equal("Kelsier", loaded.books[1].characters[1].name)
             assert.are.equal("/books/mistborn_1.epub", loaded.book_paths[1])
+        end)
+
+        it("skips saving to disk when syncing identical book data a second time", function()
+            local book_data = {
+                title = "The Final Empire",
+                author = "Brandon Sanderson",
+                characters = {
+                    { name = "Kelsier", description = "The Survivor" }
+                },
+                locations = {
+                    { name = "Luthadel", description = "Capital" }
+                },
+                terms = {},
+                timeline = {
+                    { chapter = "Chapter 1", event = "Beginning" }
+                }
+            }
+
+            -- First sync saves to disk
+            local ok1 = manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+            assert.is_true(ok1)
+
+            -- Track saveSeriesCache calls
+            local save_calls = 0
+            local orig_save = manager.saveSeriesCache
+            manager.saveSeriesCache = function(self, ...)
+                save_calls = save_calls + 1
+                return orig_save(self, ...)
+            end
+
+            -- Second sync with identical data
+            local ok2 = manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+            assert.is_true(ok2)
+            assert.are.equal(0, save_calls)
+
+            manager.saveSeriesCache = orig_save
+        end)
+
+        it("saves when character description or entity list changes", function()
+            local book_data = {
+                title = "The Final Empire",
+                author = "Brandon Sanderson",
+                characters = {
+                    { name = "Kelsier", description = "The Survivor" }
+                },
+                locations = {},
+                terms = {},
+                timeline = {}
+            }
+
+            manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+
+            local save_calls = 0
+            local orig_save = manager.saveSeriesCache
+            manager.saveSeriesCache = function(self, ...)
+                save_calls = save_calls + 1
+                return orig_save(self, ...)
+            end
+
+            -- Add a character
+            local updated_data = {
+                title = "The Final Empire",
+                author = "Brandon Sanderson",
+                characters = {
+                    { name = "Kelsier", description = "The Survivor" },
+                    { name = "Vin", description = "Mistborn apprentice" }
+                },
+                locations = {},
+                terms = {},
+                timeline = {}
+            }
+
+            local ok = manager:syncBookToSeriesCache("mistborn", 1, updated_data, "/books/mistborn_1.epub")
+            assert.is_true(ok)
+            assert.are.equal(1, save_calls)
+
+            manager.saveSeriesCache = orig_save
+
+            local loaded = manager:loadSeriesCache("mistborn")
+            assert.are.equal(2, #loaded.books[1].characters)
+        end)
+
+        it("saves when book_path changes", function()
+            local book_data = {
+                title = "The Final Empire",
+                author = "Brandon Sanderson",
+                characters = { { name = "Kelsier" } },
+                locations = {},
+                terms = {},
+                timeline = {}
+            }
+
+            manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+
+            local save_calls = 0
+            local orig_save = manager.saveSeriesCache
+            manager.saveSeriesCache = function(self, ...)
+                save_calls = save_calls + 1
+                return orig_save(self, ...)
+            end
+
+            local ok = manager:syncBookToSeriesCache("mistborn", 1, book_data, "/new/path/mistborn_1.epub")
+            assert.is_true(ok)
+            assert.are.equal(1, save_calls)
+
+            manager.saveSeriesCache = orig_save
+
+            local loaded = manager:loadSeriesCache("mistborn")
+            assert.are.equal("/new/path/mistborn_1.epub", loaded.book_paths[1])
         end)
     end)
 

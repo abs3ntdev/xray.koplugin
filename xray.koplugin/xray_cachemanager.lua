@@ -11,7 +11,20 @@ local DocSettings = require("docsettings")
 local plugin_path = ((...) or ""):match("(.-)[^%.]+$") or ""
 local AIHelper = require(plugin_path .. "xray_aihelper")
 
-local CacheManager = {}
+local CacheManager = {
+    _active_by_file = {},
+    _pending_by_file = {},
+}
+
+local function atomicRename(temp_file, cache_file)
+    local ren_ok, ren_err = os.rename(temp_file, cache_file)
+    if not ren_ok and package.config:sub(1, 1) == "\\" then
+        -- Only Windows needs unlink+rename. Preserve the previous cache on POSIX failures.
+        pcall(os.remove, cache_file)
+        ren_ok, ren_err = os.rename(temp_file, cache_file)
+    end
+    return ren_ok, ren_err
+end
 
 function CacheManager:new(o)
     o = o or {}
@@ -21,16 +34,89 @@ function CacheManager:new(o)
     return o
 end
 
-function CacheManager:cancelAsyncSaves()
-    if self._active_saves then
-        for _, entry in ipairs(self._active_saves) do
+function CacheManager:cancelAsyncSaves(flush)
+    if flush then
+        return self:flushAsyncSaves()
+    end
+    if CacheManager._active_by_file then
+        for cache_file, entry in pairs(CacheManager._active_by_file) do
             entry.cancelled = true
             if entry.file then
                 pcall(function() entry.file:close() end)
                 entry.file = nil
             end
+            if entry.path then
+                pcall(os.remove, entry.path)
+            end
+            if entry.callbacks then
+                for _, cb in ipairs(entry.callbacks) do
+                    pcall(cb, false)
+                end
+            end
         end
-        self._active_saves = {}
+        CacheManager._active_by_file = {}
+    end
+    if CacheManager._pending_by_file then
+        for _, entry in pairs(CacheManager._pending_by_file) do
+            if entry.callbacks then
+                for _, cb in ipairs(entry.callbacks) do
+                    pcall(cb, false)
+                end
+            end
+        end
+        CacheManager._pending_by_file = {}
+    end
+    self._active_saves = {}
+end
+
+function CacheManager:flushAsyncSaves()
+    local to_save = {}
+
+    if CacheManager._pending_by_file then
+        for cache_file, entry in pairs(CacheManager._pending_by_file) do
+            to_save[cache_file] = {
+                book_path = entry.book_path,
+                data = entry.data,
+                callbacks = entry.callbacks or {}
+            }
+        end
+        CacheManager._pending_by_file = {}
+    end
+
+    if CacheManager._active_by_file then
+        for cache_file, entry in pairs(CacheManager._active_by_file) do
+            entry.cancelled = true
+            if entry.file then
+                pcall(function() entry.file:close() end)
+                entry.file = nil
+            end
+            if entry.path then
+                pcall(os.remove, entry.path)
+            end
+            if not to_save[cache_file] then
+                to_save[cache_file] = {
+                    book_path = entry.book_path,
+                    data = entry.data,
+                    callbacks = entry.callbacks or {}
+                }
+            else
+                if entry.callbacks then
+                    for _, cb in ipairs(entry.callbacks) do
+                        table.insert(to_save[cache_file].callbacks, cb)
+                    end
+                end
+            end
+        end
+        CacheManager._active_by_file = {}
+    end
+
+    self._active_saves = {}
+
+    for _, item in pairs(to_save) do
+        local ok = self:saveCache(item.book_path, item.data)
+        for _, cb in ipairs(item.callbacks) do
+            pcall(cb, ok)
+        end
     end
 end
 
@@ -97,6 +183,43 @@ function CacheManager:saveCache(book_path, data)
         logger.warn("CacheManager: Cannot create cache directory")
         return false
     end
+
+    -- Cancel any active or pending async save on this file before synchronous write
+    if CacheManager._active_by_file and CacheManager._active_by_file[cache_file] then
+        local active = CacheManager._active_by_file[cache_file]
+        active.cancelled = true
+        if active.file then
+            pcall(function() active.file:close() end)
+            active.file = nil
+        end
+        if active.path then
+            pcall(os.remove, active.path)
+        end
+        if active.callbacks then
+            for _, cb in ipairs(active.callbacks) do
+                pcall(cb, false)
+            end
+        end
+        CacheManager._active_by_file[cache_file] = nil
+        if self._active_saves then
+            for idx, entry in ipairs(self._active_saves) do
+                if entry == active then
+                    table.remove(self._active_saves, idx)
+                    break
+                end
+            end
+        end
+    end
+
+    if CacheManager._pending_by_file and CacheManager._pending_by_file[cache_file] then
+        local pending = CacheManager._pending_by_file[cache_file]
+        if pending.callbacks then
+            for _, cb in ipairs(pending.callbacks) do
+                pcall(cb, false)
+            end
+        end
+        CacheManager._pending_by_file[cache_file] = nil
+    end
     
     -- Add timestamp
     data.cached_at = os.time()
@@ -121,7 +244,7 @@ function CacheManager:saveCache(book_path, data)
         end)
         
         f:write("\n")
-        f:close()
+        assert(f:close())
         
         if not ok2 then
             pcall(os.remove, temp_file)
@@ -130,8 +253,13 @@ function CacheManager:saveCache(book_path, data)
             return false
         end
         
-        pcall(os.remove, cache_file)
-        os.rename(temp_file, cache_file)
+        local ren_ok, ren_err = atomicRename(temp_file, cache_file)
+        if not ren_ok then
+            pcall(os.remove, temp_file)
+            logger.warn("CacheManager: Failed to rename temp file to cache file:", ren_err or "unknown")
+            AIHelper:log("CacheManager: Failed to rename temp file: " .. tostring(ren_err or "unknown"))
+            return false
+        end
         logger.info("CacheManager: Saved cache to:", cache_file)
         AIHelper:log("CacheManager: Saved cache to: " .. tostring(cache_file))
         return true
@@ -144,13 +272,22 @@ function CacheManager:saveCache(book_path, data)
         return false
     end
     
-    return success
+    return success and err == true
+end
+
+function CacheManager:_triggerPendingSave(cache_file)
+    local pending = CacheManager._pending_by_file and CacheManager._pending_by_file[cache_file]
+    if pending then
+        CacheManager._pending_by_file[cache_file] = nil
+        local cm = pending.cm or self
+        cm:_startAsyncSave(cache_file, pending.book_path, pending.data, pending.callbacks)
+    end
 end
 
 -- Save book data to cache asynchronously using a cooperative coroutine-based recursive serializer.
--- Writing is executed in the background by yielding to KOReader's UIManager loop every 15 entries,
+-- Writing is executed in the background by yielding to KOReader's UIManager loop periodically,
 -- ensuring that all database tables (characters, terms, locations, etc.) are saved incrementally
--- without blocking the UI thread.
+-- without blocking the UI thread. Concurrent saves to the same book cache are serialized and coalesced.
 function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
     if not book_path or not data then
         logger.warn("CacheManager: Cannot save cache async - invalid parameters")
@@ -174,6 +311,33 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
     data.cached_at = os.time()
     data.cache_version = "6.0"
 
+    -- Check if an active save is already in progress for this cache file
+    if CacheManager._active_by_file and CacheManager._active_by_file[cache_file] then
+        local pending = CacheManager._pending_by_file[cache_file]
+        if pending then
+            pending.data = data
+            pending.book_path = book_path
+            if on_done_cb then
+                table.insert(pending.callbacks, on_done_cb)
+            end
+        else
+            CacheManager._pending_by_file[cache_file] = {
+                book_path = book_path,
+                data = data,
+                callbacks = on_done_cb and { on_done_cb } or {},
+                cm = self
+            }
+        end
+        logger.info("CacheManager: Queued/coalesced async save for:", cache_file)
+        return true
+    end
+
+    return self:_startAsyncSave(cache_file, book_path, data, on_done_cb and { on_done_cb } or {})
+end
+
+function CacheManager:_startAsyncSave(cache_file, book_path, data, callbacks)
+    callbacks = callbacks or {}
+
     -- ── UIManager cooperative coroutine path (primary) ──────────────────────
     local temp_file = cache_file .. ".tmp"
     local ok_ui, UIManager = pcall(require, "ui/uimanager")
@@ -181,7 +345,8 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
         local f, open_err = io.open(temp_file, "w")
         if not f then
             logger.warn("CacheManager: Cannot open cache file for async write:", open_err or "unknown")
-            if on_done_cb then on_done_cb(false) end
+            for _, cb in ipairs(callbacks) do pcall(cb, false) end
+            self:_triggerPendingSave(cache_file)
             return false
         end
 
@@ -190,8 +355,17 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
         f:write("return ")
 
         self._active_saves = self._active_saves or {}
-        local save_entry = { cancelled = false, file = f, path = temp_file }
+        local save_entry = {
+            cancelled = false,
+            file = f,
+            path = temp_file,
+            cache_file = cache_file,
+            book_path = book_path,
+            data = data,
+            callbacks = callbacks
+        }
         table.insert(self._active_saves, save_entry)
+        CacheManager._active_by_file[cache_file] = save_entry
 
         local function cleanupSave()
             if self._active_saves then
@@ -201,6 +375,9 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
                         break
                     end
                 end
+            end
+            if CacheManager._active_by_file[cache_file] == save_entry then
+                CacheManager._active_by_file[cache_file] = nil
             end
         end
 
@@ -220,7 +397,7 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
                 f:write("{\n")
                 local child_indent = indent .. "  "
                 for k, v in pairs(obj) do
-                    if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" then
+                    if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" and (type(k) ~= "string" or k:sub(1, 1) ~= "_") then
                         f:write(child_indent)
                         if type(k) == "number" then
                             f:write("[" .. k .. "] = ")
@@ -257,10 +434,8 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
 
         local function resumeCoroutine()
             if save_entry.cancelled then
-                pcall(function() f:close() end)
-                pcall(os.remove, temp_file)
-                cleanupSave()
-                if on_done_cb then on_done_cb(false) end
+                -- Cancellation/flush already closed the file and notified callbacks.
+                -- This stale scheduled step must not unlink a newer save's temp file.
                 return
             end
 
@@ -270,30 +445,29 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
                 pcall(function() f:close() end)
                 pcall(os.remove, temp_file)
                 cleanupSave()
-                if on_done_cb then on_done_cb(false) end
+                for _, cb in ipairs(save_entry.callbacks) do pcall(cb, false) end
+                self:_triggerPendingSave(cache_file)
                 return
             end
 
             if coroutine.status(co) == "dead" then
-                local closed = pcall(function() assert(f:close()) end)
-                -- POSIX rename atomically replaces the destination, so the
-                -- previous cache survives any close/rename failure. Only on
-                -- Windows (rename cannot overwrite) fall back to unlink+rename.
-                local renamed = closed and os.rename(temp_file, cache_file)
-                if closed and not renamed and package.config:sub(1, 1) == "\\" then
-                    pcall(os.remove, cache_file)
-                    renamed = os.rename(temp_file, cache_file)
+                local closed, close_err = pcall(function() assert(f:close()) end)
+                local ren_ok, ren_err = false, close_err
+                if closed then
+                    ren_ok, ren_err = atomicRename(temp_file, cache_file)
                 end
                 cleanupSave()
-                if not renamed then
-                    logger.warn("CacheManager: Could not finalize async cache write:", cache_file)
+                if not ren_ok then
+                    logger.warn("CacheManager: Could not finalize async cache write:", ren_err or "unknown")
+                    AIHelper:log("CacheManager: Could not finalize async cache write: " .. tostring(ren_err or "unknown"))
                     pcall(os.remove, temp_file)
-                    if on_done_cb then on_done_cb(false) end
-                    return
+                    for _, cb in ipairs(save_entry.callbacks) do pcall(cb, false) end
+                else
+                    logger.info("CacheManager: Saved cache asynchronously (cooperative) to:", cache_file)
+                    AIHelper:log("CacheManager: Saved cache asynchronously (cooperative) to: " .. tostring(cache_file))
+                    for _, cb in ipairs(save_entry.callbacks) do pcall(cb, true) end
                 end
-                logger.info("CacheManager: Saved cache asynchronously (cooperative) to:", cache_file)
-                AIHelper:log("CacheManager: Saved cache asynchronously (cooperative) to: " .. tostring(cache_file))
-                if on_done_cb then on_done_cb(true) end
+                self:_triggerPendingSave(cache_file)
             else
                 if not save_entry.cancelled then
                     UIManager:scheduleIn(0.05, resumeCoroutine)
@@ -301,7 +475,8 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
                     pcall(function() f:close() end)
                     pcall(os.remove, temp_file)
                     cleanupSave()
-                    if on_done_cb then on_done_cb(false) end
+                    for _, cb in ipairs(save_entry.callbacks) do pcall(cb, false) end
+                    self:_triggerPendingSave(cache_file)
                 end
             end
         end
@@ -360,7 +535,8 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
                 end)
             end
             logger.info("CacheManager: Saved cache asynchronously (fork PID " .. tostring(pid) .. ") to:", cache_file)
-            if on_done_cb then on_done_cb(true) end
+            for _, cb in ipairs(callbacks) do pcall(cb, true) end
+            self:_triggerPendingSave(cache_file)
             return true
         end
     end
@@ -368,7 +544,8 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
     -- ── Final fallback: synchronous ───────────────────────────────────────────
     logger.info("CacheManager: Async save unavailable, using synchronous save")
     local success = self:saveCache(book_path, data)
-    if on_done_cb then on_done_cb(success) end
+    for _, cb in ipairs(callbacks) do pcall(cb, success) end
+    self:_triggerPendingSave(cache_file)
     return success
 end
 
@@ -453,7 +630,7 @@ function CacheManager:serializeToFile(f, obj, indent, seen)
         f:write("{\n")
         local child_indent = indent .. "  "
         for k, v in pairs(obj) do
-            if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" then
+            if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" and (type(k) ~= "string" or k:sub(1, 1) ~= "_") then
                 f:write(child_indent)
                 if type(k) == "string" then
                     if k:match("^[%a_][%w_]*$") then
@@ -496,7 +673,7 @@ function CacheManager:serialize(obj, indent, seen)
         seen[obj] = true
         local parts = {}
         for k, v in pairs(obj) do
-            if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" then
+            if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" and (type(k) ~= "string" or k:sub(1, 1) ~= "_") then
                 local key
                 if type(k) == "string" and k:match("^[%a_][%w_]*$") then
                     key = k .. " = "

@@ -16,6 +16,108 @@ local function _truncateSafe(text, limit)
     return (utils:getTruncatedText(text, limit))
 end
 
+local function _utf8CharLen(s)
+    if not s or s == "" then return 0 end
+    local _, count = s:gsub("[%z\1-\127\194-\244][\128-\191]*", "")
+    return count
+end
+
+local function _isWordBreakChar(c)
+    if not c or c == "" then return true end
+    local b = c:byte(1)
+    if b <= 127 then
+        return c:match("[%s%p]") ~= nil
+    end
+    -- Multibyte Unicode punctuation / whitespace
+    if c:match("^\194[\160\171\183\187\191\161]") then return true end
+    if c:match("^\226\128[\128-\191]") then return true end
+    if c:match("^\226\136\146") then return true end
+    if c:match("^\227\128[\128-\191]") then return true end
+    if c:match("^\239\188[\128-\191]") then return true end
+    return false
+end
+
+-- Find start of UTF-8 character ending at pos in str
+local function _getPrevChar(str, pos)
+    if pos < 1 then return nil end
+    local b = str:byte(pos)
+    if b <= 127 then
+        return str:sub(pos, pos)
+    end
+    -- Multibyte continuation: search back for lead byte
+    local start_pos = pos
+    while start_pos > 1 and str:byte(start_pos) >= 128 and str:byte(start_pos) <= 191 do
+        start_pos = start_pos - 1
+    end
+    return str:sub(start_pos, pos)
+end
+
+local function _isUnsegmentedOrPrefixScript(s)
+    if not s or s == "" then return false end
+    -- CJK: U+3000-U+9FFF etc.
+    if s:find("[\227-\234][\128-\191][\128-\191]") then return true end
+    -- Arabic
+    if s:find("[\216-\219][\128-\191]") or s:find("\221[\144-\191]")
+        or s:find("\224[\162-\163][\128-\191]") or s:find("\239[\173-\187][\128-\191]") then
+        return true
+    end
+    -- Hebrew: U+0590-U+05FF
+    if s:find("[\214-\215][\128-\191]") then return true end
+    -- Thai: U+0E00-U+0E7F
+    if s:find("\224[\184-\185][\128-\191]") then return true end
+    return false
+end
+
+local function _matchShorterInLonger(shorter, longer)
+    if not shorter or not longer or #shorter == 0 or #longer == 0 then return false end
+    if #shorter > #longer then return false end
+
+    local shorter_char_len = _utf8CharLen(shorter)
+    local max_run_on = (shorter_char_len < 3) and 0 or 3
+
+    local init = 1
+    while true do
+        local s, e = longer:find(shorter, init, true)
+        if not s then break end
+
+        -- Check 1: Does shorter start a word in longer?
+        local starts_word = false
+        if s == 1 then
+            starts_word = true
+        else
+            local prev_char = _getPrevChar(longer, s - 1)
+            starts_word = _isWordBreakChar(prev_char)
+        end
+
+        if starts_word then
+            -- Check 2: How many characters does the word run on after e?
+            local rest = longer:sub(e + 1)
+            local run_on = 0
+            local valid = true
+
+            for c in rest:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+                if _isWordBreakChar(c) then
+                    break
+                else
+                    run_on = run_on + 1
+                    if run_on > max_run_on then
+                        valid = false
+                        break
+                    end
+                end
+            end
+
+            if valid and run_on <= max_run_on then
+                return true
+            end
+        end
+
+        init = s + 1
+    end
+
+    return false
+end
+
 function LookupManager:new(plugin)
     local o = {
         plugin = plugin
@@ -30,6 +132,61 @@ function LookupManager:normalize(text)
     if type(text) ~= "string" or text == "" then return "" end
     local clean = utils:trimPunctuation(text)
     return utils:utf8Lower(clean)
+end
+
+function LookupManager:getNormName(item)
+    if not item or not item.name then return "" end
+    local norm = item._norm_name
+    if not norm or item._norm_name_src ~= item.name then
+        norm = self:normalize(item.name)
+        item._norm_name = norm
+        item._norm_name_src = item.name
+    end
+    return norm
+end
+
+function LookupManager:getNormAliases(item)
+    if not item or not item.aliases or #item.aliases == 0 then
+        item._norm_aliases = nil
+        return nil
+    end
+
+    local norm_list = item._norm_aliases
+    local needs_rebuild = not norm_list
+
+    if not needs_rebuild then
+        local valid_idx = 0
+        for _, alias in ipairs(item.aliases) do
+            if type(alias) == "string" and alias ~= "" then
+                local anorm = self:normalize(alias)
+                if anorm ~= "" then
+                    valid_idx = valid_idx + 1
+                    if norm_list[valid_idx] ~= anorm then
+                        needs_rebuild = true
+                        break
+                    end
+                end
+            end
+        end
+        if not needs_rebuild and valid_idx ~= #norm_list then
+            needs_rebuild = true
+        end
+    end
+
+    if needs_rebuild then
+        norm_list = {}
+        for _, alias in ipairs(item.aliases) do
+            if type(alias) == "string" and alias ~= "" then
+                local anorm = self:normalize(alias)
+                if anorm ~= "" then
+                    table.insert(norm_list, anorm)
+                end
+            end
+        end
+        item._norm_aliases = norm_list
+    end
+
+    return norm_list
 end
 
 -- Perform a robust lookup and return ALL matching candidates, prioritised by
@@ -54,11 +211,7 @@ function LookupManager:lookupAll(text)
         if not item or not item.name then return end
         if seen[item] then return end
 
-        local norm = item._norm_name
-        if not norm then
-            norm = self:normalize(item.name)
-            item._norm_name = norm
-        end
+        local norm = self:getNormName(item)
         if norm == "" then return end
 
         -- Exact
@@ -68,22 +221,11 @@ function LookupManager:lookupAll(text)
             return
         end
 
-        -- Lazily build _norm_aliases if not yet cached
-        if item.aliases and not item._norm_aliases then
-            item._norm_aliases = {}
-            for _, alias in ipairs(item.aliases) do
-                if type(alias) == "string" and alias ~= "" then
-                    local anorm = self:normalize(alias)
-                    if anorm ~= "" then
-                        table.insert(item._norm_aliases, anorm)
-                    end
-                end
-            end
-        end
+        local norm_aliases = self:getNormAliases(item)
 
         -- Aliases Exact
-        if item._norm_aliases then
-            for _, anorm in ipairs(item._norm_aliases) do
+        if norm_aliases then
+            for _, anorm in ipairs(norm_aliases) do
                 if anorm == query then
                     seen[item] = true
                     table.insert(final_results, { item = item, item_type = item_type, score = 95 })
@@ -95,7 +237,14 @@ function LookupManager:lookupAll(text)
         -- Contains / Contained (Pass 2 & 3 combined)
         local function checkContains(text_norm)
             if not text_norm or #text_norm < 2 then return false end
-            return query:find(text_norm, 1, true) or text_norm:find(query, 1, true)
+            if _isUnsegmentedOrPrefixScript(query) or _isUnsegmentedOrPrefixScript(text_norm) then
+                return query:find(text_norm, 1, true) ~= nil or text_norm:find(query, 1, true) ~= nil
+            end
+            if #query <= #text_norm then
+                return _matchShorterInLonger(query, text_norm)
+            else
+                return _matchShorterInLonger(text_norm, query)
+            end
         end
 
         if checkContains(norm) then
@@ -105,8 +254,8 @@ function LookupManager:lookupAll(text)
             return
         end
 
-        if item._norm_aliases then
-            for _, anorm in ipairs(item._norm_aliases) do
+        if norm_aliases then
+            for _, anorm in ipairs(norm_aliases) do
                 if checkContains(anorm) then
                     seen[item] = true
                     local alias_score = (item_type == "term") and 25 or 40

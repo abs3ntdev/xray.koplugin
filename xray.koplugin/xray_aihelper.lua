@@ -191,10 +191,15 @@ end
 -- Backward compatibility for internal calls
 local sanitize_utf8 = function(s) return AIHelper:sanitize_utf8(s) end
 
+local function is_openai_reasoning_model(model)
+    local major = tonumber(model:match("^gpt%-(%d+)"))
+    return (major and major >= 5) or model:match("^o%d") ~= nil
+end
+
 function AIHelper:getChatGPTTokenConfig(model)
     -- OpenAI reasoning models (o1, o3) and newer generations (gpt-5+) REQUIRE max_completion_tokens.
     -- Modern flagship models (gpt-4o, gpt-4o-mini) also support it.
-    if model:find("^o[13]") or model:find("^gpt%-[56]") or model:find("^gpt%-4o") then
+    if is_openai_reasoning_model(model) or model:find("^gpt%-4o") then
         return "max_completion_tokens", 32000
     end
     
@@ -633,7 +638,7 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
                 url = config.endpoint or "https://api.openai.com/v1/chat/completions"
                 headers = { ["Content-Type"] = "application/json", ["Authorization"] = "Bearer " .. config.api_key }
                 local system_instruction_text = self.prompts and self.prompts.system_instruction or "Return valid JSON ONLY."
-                local is_openai_reasoning = (model:find("^gpt%-[56]") or model:find("^o[13]"))
+                local is_openai_reasoning = is_openai_reasoning_model(model)
                 if is_openai_reasoning then
                     system_instruction_text = system_instruction_text .. " You MUST output strictly valid JSON, starting with '{'."
                 else
@@ -673,7 +678,7 @@ function AIHelper:buildComprehensiveRequest(title, author, context, prompt_overr
                 -- Also raise max_completion_tokens: GPT-5 models support 128k output; at xhigh effort
                 -- OpenAI recommends reserving ~25k for reasoning, so 65k is a safe ceiling.
                 if (ai.provider == "chatgpt" or ai.provider == "custom1" or ai.provider == "custom2")
-                    and (model:find("^gpt%-[56]") or model:find("^o[13]")) then
+                    and is_openai_reasoning then
                     local current_effort = self.settings and self.settings.reasoning_effort
                     if current_effort then
                         req_body.reasoning_effort = current_effort
@@ -2823,7 +2828,7 @@ function AIHelper:callChatGPT(prompt, config, current_model)
 
     self:log("AIHelper: ChatGPT Prompt prepared")
     local system_instruction_text = self.prompts and self.prompts.system_instruction or "Return valid JSON ONLY."
-    local is_openai_reasoning = (model:find("^gpt%-[56]") or model:find("^o[13]"))
+    local is_openai_reasoning = is_openai_reasoning_model(model)
     if is_openai_reasoning then
         system_instruction_text = system_instruction_text .. " You MUST output strictly valid JSON, starting with '{'."
     else
@@ -2857,7 +2862,7 @@ function AIHelper:callChatGPT(prompt, config, current_model)
     -- When reasoning is active, drop response_format and rely on the system prompt's JSON instruction.
     -- Also raise max_completion_tokens: GPT-5 supports 128k output; at xhigh OpenAI recommends ~25k buffer,
     -- so 65k is a safe ceiling that leaves ample room for both reasoning and the X-Ray JSON.
-    if self.settings.reasoning_effort and (model:find("^gpt%-[56]") or model:find("^o[13]")) then
+    if self.settings.reasoning_effort and is_openai_reasoning then
         local effort = self.settings.reasoning_effort
         request_payload.reasoning_effort = effort
         request_payload.response_format = nil  -- incompatible with reasoning_effort

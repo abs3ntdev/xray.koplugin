@@ -1114,6 +1114,7 @@ function M:finalizeXRayData(final_book_data, title, author, book_text, is_update
                     end
                     existing.expanded = new_term.expanded
                     existing.aliases = new_term.aliases
+                    existing._norm_aliases = nil
                     found = true; break
                 end
             end

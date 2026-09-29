@@ -172,6 +172,8 @@ function M:promoteName(entity, new_name)
         table.insert(entity.aliases, old_name)
     end
     entity.name = new_name
+    entity._norm_name = nil
+    entity._norm_aliases = nil
 end
 
 function M:deduplicateByName(list, key)
@@ -233,6 +235,7 @@ function M:deduplicateByName(list, key)
                             end
                             if not found and new_alias:lower() ~= existing.name:lower() then
                                 table.insert(existing.aliases, new_alias)
+                                existing._norm_aliases = nil
                                 alias_map[new_alias:lower()] = existing
                             end
                         end
@@ -480,6 +483,8 @@ function M:mergeEntries(list, primary_name, secondary_name, ai_merged_desc)
         end
         if not already then table.insert(primary.aliases, secondary.name) end
     end
+    primary._norm_name = nil
+    primary._norm_aliases = nil
 
     -- 2. Absorb secondary's aliases (deduplicated)
     local existing_aliases = {}

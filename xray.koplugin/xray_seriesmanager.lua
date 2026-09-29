@@ -277,23 +277,49 @@ function SeriesManager:saveSeriesCache(slug, data)
     data.cached_at = os.time()
     data.cache_version = "6.0"
     
-    local success, err = pcall(function()
-        local f, open_err = io.open(cache_file, "w")
+    local temp_file = cache_file .. ".tmp"
+    local success, result = pcall(function()
+        local f, open_err = io.open(temp_file, "w")
         if not f then
-            logger.warn("SeriesManager: Cannot open file for writing:", cache_file)
+            logger.warn("SeriesManager: Cannot open file for writing:", temp_file)
             return false
         end
         
         f:write("-- X-Ray Series Cache v6.0\n")
         f:write("return ")
-        self:serializeToFile(f, data, "")
+        local ok2, write_err = pcall(function()
+            self:serializeToFile(f, data, "")
+        end)
         f:write("\n")
         f:close()
+
+        if not ok2 then
+            pcall(os.remove, temp_file)
+            logger.warn("SeriesManager: Serialization error:", write_err or "unknown")
+            return false
+        end
+
+        pcall(os.remove, cache_file)
+        local ok_ren, ren_err = os.rename(temp_file, cache_file)
+        if not ok_ren then
+            pcall(os.remove, temp_file)
+            logger.warn("SeriesManager: Failed to rename temp file to cache file:", ren_err or "unknown")
+            return false
+        end
+
         logger.info("SeriesManager: Saved series cache to:", cache_file)
         return true
     end)
     
-    return success
+    if not success or result ~= true then
+        pcall(os.remove, temp_file)
+        if not success then
+            logger.warn("SeriesManager: Failed to save series cache:", result or "unknown error")
+        end
+        return false
+    end
+
+    return true
 end
 
 -- Load series context from global cache
@@ -491,6 +517,30 @@ local function filterCurrentOnly(tbl)
     return res
 end
 
+local function deepEqual(a, b, visited)
+    if a == b then return true end
+    local type_a = type(a)
+    local type_b = type(b)
+    if type_a ~= type_b then return false end
+    if type_a ~= "table" then return false end
+
+    visited = visited or {}
+    if visited[a] and visited[a] == b then return true end
+    visited[a] = b
+
+    for k, v in pairs(a) do
+        if not deepEqual(v, b[k], visited) then
+            return false
+        end
+    end
+    for k, _ in pairs(b) do
+        if a[k] == nil then
+            return false
+        end
+    end
+    return true
+end
+
 -- Synchronize clean book data into SeriesCache for a specific book index
 function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, is_explicit)
     if not slug or slug == "" or slug == "series" or not index or not book_data then
@@ -499,11 +549,14 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
     index = tonumber(index)
     if not index then return false end
 
-    local cache_data = self:loadSeriesCache(slug) or {
+    local loaded_cache = self:loadSeriesCache(slug)
+    local is_new_cache = (loaded_cache == nil)
+    local cache_data = loaded_cache or {
         series_slug = slug,
         books = {},
         book_paths = {},
     }
+    cache_data.series_slug = cache_data.series_slug or slug
     cache_data.books = cache_data.books or {}
     cache_data.book_paths = cache_data.book_paths or {}
 
@@ -538,7 +591,9 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
         end
     end
 
-    cache_data.books[index] = {
+    local changed = is_new_cache
+
+    local new_entry = {
         title = title,
         author = author,
         characters = filterCurrentOnly(book_data.characters),
@@ -547,14 +602,19 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
         timeline = filterCurrentOnly(book_data.timeline),
         source = "local_xray",
     }
+
     if book_path and book_path ~= "" then
         for other_idx, other_path in pairs(cache_data.book_paths) do
             if tonumber(other_idx) ~= index and other_path == book_path then
                 cache_data.book_paths[other_idx] = nil
                 cache_data.books[other_idx] = nil
+                changed = true
             end
         end
-        cache_data.book_paths[index] = book_path
+        if cache_data.book_paths[index] ~= book_path then
+            cache_data.book_paths[index] = book_path
+            changed = true
+        end
     end
 
     if title and title ~= "" then
@@ -562,8 +622,20 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
             if tonumber(other_idx) ~= index and other_book and other_book.title and other_book.title:lower() == title:lower() then
                 cache_data.book_paths[other_idx] = nil
                 cache_data.books[other_idx] = nil
+                changed = true
             end
         end
+    end
+
+    local existing_entry = cache_data.books[index]
+    if not existing_entry or not deepEqual(existing_entry, new_entry) then
+        cache_data.books[index] = new_entry
+        changed = true
+    end
+
+    if not changed then
+        logger.info("SeriesManager: Book " .. tostring(index) .. " already up-to-date in series cache for slug '" .. tostring(slug) .. "' (skipping save)")
+        return true
     end
 
     logger.info("SeriesManager: Synced Book " .. tostring(index) .. " to series cache for slug '" .. tostring(slug) .. "'")
