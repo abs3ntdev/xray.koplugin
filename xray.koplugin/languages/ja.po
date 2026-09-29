@@ -1913,3 +1913,7 @@ msgstr "辞書および選択メニューに「X-Ray」ボタンを追加し、�
 msgid "yes"
 msgstr "はい"
 
+# en-hash: d1591eafbd0b70a04df7b81673b81bfc
+msgid "menu_update_history"
+msgstr "更新履歴"
+

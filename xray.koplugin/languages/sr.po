@@ -1913,3 +1913,7 @@ msgstr "Додаје дугме 'X-Ray' у речнике и селекцион�
 msgid "yes"
 msgstr "Да"
 
+# en-hash: d1591eafbd0b70a04df7b81673b81bfc
+msgid "menu_update_history"
+msgstr "Историја ажурирања"
+

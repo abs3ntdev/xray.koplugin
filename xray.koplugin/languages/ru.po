@@ -1913,3 +1913,7 @@ msgstr "Добавляет кнопку 'X-Ray' в меню словаря и в
 msgid "yes"
 msgstr "Да"
 
+# en-hash: d1591eafbd0b70a04df7b81673b81bfc
+msgid "menu_update_history"
+msgstr "История обновлений"
+

@@ -3358,6 +3358,22 @@ function M:clearLogs()
     UIManager:show(InfoMessage:new{ text = self.loc:t("logs_cleared") or "Logs cleared!", timeout = 3 })
 end
 
+-- Settings-only viewer for the bounded update history. Only ever opened from
+-- the Logs menu; nothing in the reading flow calls this.
+function M:showUpdateHistory()
+    if not self.update_history then
+        self.update_history = require(plugin_path .. "xray_update_history").new()
+    end
+    local History = require(plugin_path .. "xray_update_history")
+    local TextViewer = require("ui/widget/textviewer")
+    local viewer = TextViewer:new{
+        title = self.loc:t("menu_update_history") or "Update History",
+        text = History.format(self.update_history:load()),
+    }
+    UIManager:show(viewer)
+    return viewer
+end
+
 local XRayLogViewer = InputContainer:extend{
     pages = nil,
     log_path = nil,

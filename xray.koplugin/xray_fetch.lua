@@ -463,11 +463,50 @@ function M:_processSingleWordResult(result, text, book_text, current_page)
     end
 end
 
+-- Settings-only update history (never shows UI). Records metadata only.
+function M:recordUpdateHistory(entry, opts)
+    local ok = pcall(function()
+        if not self.update_history then
+            self.update_history = require(plugin_path .. "xray_update_history").new()
+        end
+        if entry.book == nil then
+            local props = self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps() or {}
+            local t = props.title or props.Title
+            if type(t) ~= "string" or t == "" then
+                local file = self.ui and self.ui.document and self.ui.document.file
+                t = type(file) == "string" and file:match("([^/\\]+)$") or nil
+            end
+            entry.book = t
+        end
+        self.update_history:record(entry, opts)
+    end)
+    return ok
+end
+
+local function historyOutcome(success, err_code)
+    if success then return "success" end
+    if err_code == "cancelled" or err_code == "USER_CANCELLED" then return "cancelled" end
+    if err_code == "busy" or err_code == "offline" or err_code == "error_extract" then return "skipped" end
+    return "failed"
+end
+M._historyOutcome = historyOutcome
+
 function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_silent, batch_end_page, on_complete_cb)
     local completed = false
+    local history_route, history_summary
     local function notifyComplete(success, err_code, err_msg)
         if completed then return end
         completed = true
+        local summary = history_summary or {}
+        local ok_outcome = success and summary.outcome ~= "failed"
+        local route = history_route or {}
+        self:recordUpdateHistory({
+            op = is_silent and "background" or (is_update and "update" or "fetch"),
+            outcome = historyOutcome(ok_outcome, summary.error_code or err_code),
+            error_code = summary.error_code or ((not success) and err_code) or nil,
+            provider = route.provider, model = route.model, slot = route.slot,
+            counts = summary.counts, cache_saved = summary.cache_saved,
+        })
         if on_complete_cb then
             pcall(on_complete_cb, success, err_code, err_msg)
         end
@@ -770,6 +809,10 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
                     return
                 end
                 local data, p_err_code, p_err_msg = self.ai_helper:checkAsyncResult(result_file, request_pid)
+                if data ~= nil and p_err_code ~= "error_stale" then
+                    local r = self.ai_helper.last_route
+                    history_route = type(r) == "table" and { provider = r.provider, model = r.model, slot = r.slot } or nil
+                end
                 if data == nil then
                     if not self:isRequestTimedOut(request_started_at, request_timeout) then
                         UIManager:scheduleIn(2, poll)
@@ -808,7 +851,12 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
                 else
                     if wait_msg then UIManager:close(wait_msg) end
                     finishActiveRequest()
-                    self:finalizeXRayData(data, title, author, book_text, is_update, is_silent, current_page)
+                    local ok_fin, summary = pcall(self.finalizeXRayData, self, data, title, author, book_text, is_update, is_silent, current_page)
+                    if not ok_fin then
+                        self:log("XRayPlugin: finalize failed: " .. tostring(summary))
+                        summary = { outcome = "failed", error_code = "error_merge" }
+                    end
+                    history_summary = type(summary) == "table" and summary or nil
                     notifyComplete(true)
                 end
             end
@@ -818,8 +866,10 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
 end
 
 
+-- Returns a metadata-only summary { outcome, error_code, counts, cache_saved }
+-- for the update history.
 function M:finalizeXRayData(final_book_data, title, author, book_text, is_update, is_silent, current_page)
-    if self.destroyed or not self.ui or not self.ui.document then return end
+    if self.destroyed or not self.ui or not self.ui.document then return { outcome = "failed", error_code = "error_closed" } end
     final_book_data.book_title = title
     final_book_data.author = author
 
@@ -857,7 +907,7 @@ function M:finalizeXRayData(final_book_data, title, author, book_text, is_update
             UIManager:show(InfoMessage:new{ text = msg, timeout = 8 })
         end
         self.bg_fetch_active = false
-        return  -- do NOT touch self.characters / self.locations / cache
+        return { outcome = "failed", error_code = "error_empty" }  -- do NOT touch self.characters / self.locations / cache
     end
 
     -- Resolve current chapter title for history tracking
@@ -1293,6 +1343,16 @@ function M:finalizeXRayData(final_book_data, title, author, book_text, is_update
         UIManager:show(success_dialog)
     end
 
+    return {
+        outcome = cache_saved and "success" or "failed",
+        error_code = (not cache_saved) and "error_save" or nil,
+        cache_saved = cache_saved and true or false,
+        counts = {
+            characters = #(self.characters or {}), locations = #(self.locations or {}),
+            terms = #(self.terms or {}), timeline = #(self.timeline or {}),
+            historical_figures = #(self.historical_figures or {}),
+        },
+    }
 end
 
 function M:runPostFetchDuplicateCheck(title, author, reading_percent, is_silent)
@@ -1631,6 +1691,12 @@ function M:fetchMoreEntities(entity_type)
                 end
                 local res, err_code, err_msg = self.ai_helper:checkAsyncResult(result_file, request_pid)
                 if is_cancelled then return end
+                local history_op = is_terms and "more_terms" or "more_characters"
+                local function historyRoute(entry)
+                    local r = err_code ~= "error_stale" and self.ai_helper.last_route or nil
+                    if type(r) == "table" then entry.provider, entry.model, entry.slot = r.provider, r.model, r.slot end
+                    return entry
+                end
                 if res == nil then
                     UIManager:scheduleIn(1, poll)
                 else
@@ -1649,6 +1715,7 @@ function M:fetchMoreEntities(entity_type)
 
                     if not res or type(res) ~= "table" then
                         if is_cancelled then return end
+                        self:recordUpdateHistory(historyRoute({ op = history_op, outcome = "failed", error_code = err_code or "error_api" }))
                         local utils = require(plugin_path .. "xray_utils")
                         local err_title, text = utils:getFriendlyError(err_code, err_msg, self.loc)
                         local display_msg = err_title or "Error"
@@ -1668,6 +1735,7 @@ function M:fetchMoreEntities(entity_type)
                     local items = is_terms and (res.terms or (not res.terms and res[1] and res)) or (res.characters or (not res.characters and res[1] and res))
                     if not items then
                         if is_cancelled then return end
+                        self:recordUpdateHistory(historyRoute({ op = history_op, outcome = "failed", error_code = "error_parse" }))
                         local utils = require(plugin_path .. "xray_utils")
                         local err_title, text = utils:getFriendlyError(err_code, err_msg, self.loc)
                         local display_msg = err_title or "Error"
@@ -1732,7 +1800,14 @@ function M:fetchMoreEntities(entity_type)
                     updated_data.timeline = self.timeline or updated_data.timeline
                     updated_data.author_info = self.author_info or updated_data.author_info
 
-                    self.cache_manager:asyncSaveCache(doc_file, updated_data)
+                    local more_saved = self.cache_manager:asyncSaveCache(doc_file, updated_data) and true or false
+                    self:recordUpdateHistory(historyRoute({
+                        op = history_op,
+                        outcome = more_saved and "success" or "failed",
+                        error_code = (not more_saved) and "error_save" or nil,
+                        cache_saved = more_saved,
+                        counts = is_terms and { terms = new_count } or { characters = new_count },
+                    }))
 
                     if not is_terms then
                         local cur_p = self.ui and self.ui.getCurrentPage and self.ui:getCurrentPage() or 1
@@ -1930,9 +2005,15 @@ function M:fetchAuthorInfo()
 
                 if is_cancelled then return end
 
+                local function historyRoute(entry)
+                    local r = err_code ~= "error_stale" and self.ai_helper.last_route or nil
+                    if type(r) == "table" then entry.provider, entry.model, entry.slot = r.provider, r.model, r.slot end
+                    return entry
+                end
                 local author_data = (type(res) == "table" and (res.author_info or res)) or nil
                 if not author_data or not (author_data.author or author_data.name or author_data.author_bio or author_data.description) then
                     if is_cancelled then return end
+                    self:recordUpdateHistory(historyRoute({ op = "author", outcome = "failed", error_code = (type(res) == "table") and "error_parse" or (err_code or "error_api") }))
                     local utils = require(plugin_path .. "xray_utils")
                     local err_title, text = utils:getFriendlyError(err_code, err_msg, self.loc)
                     local display_msg = err_title or "Error"
@@ -1972,7 +2053,11 @@ function M:fetchAuthorInfo()
                     self.book_type = author_data.book_type
                 end
                 
-                self.cache_manager:asyncSaveCache(doc_file, cache)
+                local author_saved = self.cache_manager:asyncSaveCache(doc_file, cache) and true or false
+                self:recordUpdateHistory(historyRoute({
+                    op = "author", outcome = author_saved and "success" or "failed",
+                    error_code = (not author_saved) and "error_save" or nil, cache_saved = author_saved,
+                }))
                 self:showAuthorInfo()
             end
         end

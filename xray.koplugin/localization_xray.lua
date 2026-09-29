@@ -226,6 +226,7 @@ function Localization:t(key, ...)
             no_data_prompt = "No X-Ray data found for this book. Would you like to fetch it from AI now?",
             menu_clear_logs = "Clear Logs",
             menu_view_log = "View Log",
+            menu_update_history = "Update History",
             log_empty = "Log is empty.",
             log_tail_notice = "[... %d earlier line(s) omitted ...]",
             log_loading = "Loading log...",

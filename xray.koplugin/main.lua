@@ -636,7 +636,11 @@ function XRayPlugin:scheduleBackgroundCatchUp(delay)
         -- SILENT NETWORK CHECK: strictly passive check, NEVER show white-box popups or dialogs
         local NetworkMgr = require("ui/network/manager")
         if not NetworkMgr:isConnected() or not NetworkMgr:isOnline() then
-            -- Still offline: keep pending_background_fetch = true, do NOT poll
+            -- Still offline: keep pending_background_fetch = true, do NOT poll.
+            -- History write only (no UI); repeated skips are coalesced.
+            if self.recordUpdateHistory then
+                self:recordUpdateHistory({ op = "background", outcome = "skipped", error_code = "offline" }, { coalesce_seconds = 3600 })
+            end
             return
         end
 
@@ -1689,6 +1693,11 @@ function XRayPlugin:getSubMenuItems()
                 text = self.loc:t("menu_view_log") or "View Log",
                 keep_menu_open = true,
                 callback = function() self:viewLog() end,
+            },
+            {
+                text = self.loc:t("menu_update_history") or "Update History",
+                keep_menu_open = true,
+                callback = function() self:showUpdateHistory() end,
             },
             {
                 text = self.loc:t("menu_beta_channel") or "Beta Channel Settings",

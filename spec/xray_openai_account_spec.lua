@@ -255,6 +255,34 @@ describe("AIHelper openai_account provider", function()
             end)
         end
 
+        it("API -> subscription failover in the child uses SecureHTTP for the secondary", function()
+            local failing_api = { url = "https://api.openai.com/v1/chat/completions", provider = "chatgpt", headers = {}, body = "{}" }
+            local http = package.loaded["socket.http"]
+            secure = fakeSecure({ { 200, sse_ok('{"characters":[{"name":"Ann"}]}') } })
+            AIHelper._secure_http = secure
+            local su, lt = package.loaded["socketutil"], package.loaded["ltn12"]
+            su.set_timeout = function() end; su.reset_timeout = function() end
+            su.table_sink = function(t) return t end
+            lt.source = { string = function(x) return x end }
+            local old = http.request
+            http.request = function(r) table.insert(generic_calls, r.url); return 1, 500, {} end
+            local old_sleep = package.loaded["socket"].sleep
+            package.loaded["socket"].sleep = function() end
+            local tmp = os.tmpname()
+            local sub = subReq(); sub.slot = "secondary"
+            AIHelper._async_routes = { { provider = "chatgpt", slot = "primary" }, { provider = "openai_account", model = "gpt-6-luna", slot = "secondary" } }
+            local ok, err = pcall(AIHelper._runChildRequests, AIHelper, { failing_api, sub }, tmp)
+            http.request = old
+            package.loaded["socket"].sleep = old_sleep
+            assert(ok, err)
+            assert.are.equal(1, #generic_calls)
+            assert.are.equal(1, #secure.calls)
+            assert.is_nil(generic_calls[1]:find("chatgpt.com", 1, true))
+            assert.is_table(AIHelper:checkAsyncResult(tmp))
+            assert.are.equal("secondary", AIHelper.last_route.slot)
+            assert.are.equal("openai_account", AIHelper.last_route.provider)
+        end)
+
         it("never refreshes in the child on 401", function()
             local req = subReq()
             local before = auth.calls.context
@@ -367,6 +395,54 @@ describe("AIHelper openai_account provider", function()
             assert.is_table(res)
             assert.are.equal(0, #generic_calls)
             assert.are.equal("primary", AIHelper.last_route.slot)
+        end)
+
+        it("API -> subscription failover (sync)", function()
+            AIHelper.settings.primary_ai = { provider = "chatgpt", model = "gpt-5.4-mini" }
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
+            AIHelper.callChatGPT = function() table.insert(generic_calls, "chatgpt"); return nil, "error_api", "x" end
+            AIHelper._secure_http = fakeSecure({ { 200, sse_ok('{"characters":[]}') } })
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_table(res)
+            assert.are.same({ "chatgpt" }, generic_calls)
+            assert.are.equal("secondary", AIHelper.last_route.slot)
+            assert.are.equal("openai_account", AIHelper.last_route.provider)
+        end)
+
+        it("API-primary success does not try the secondary", function()
+            AIHelper.settings.primary_ai = { provider = "chatgpt", model = "gpt-5.4-mini" }
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
+            local s = fakeSecure({})
+            AIHelper._secure_http = s
+            local res = AIHelper:executeUnifiedRequest("p")
+            assert.is_true(res.paid)
+            assert.are.equal(0, #s.calls)
+            assert.are.equal(0, auth.calls.context)
+        end)
+
+        it("cancelling an API primary never triggers the subscription secondary", function()
+            AIHelper.settings.primary_ai = { provider = "chatgpt", model = "gpt-5.4-mini" }
+            AIHelper.settings.secondary_ai = { provider = "openai_account", model = "gpt-6-luna" }
+            AIHelper.callChatGPT = saved.callChatGPT
+            AIHelper.makeRequest = function() table.insert(generic_calls, "api"); return nil, "USER_CANCELLED", "Request cancelled" end
+            local s = fakeSecure({})
+            AIHelper._secure_http = s
+            local res, code = AIHelper:executeUnifiedRequest("p")
+            assert.is_nil(res)
+            assert.are.equal("USER_CANCELLED", code)
+            assert.are.equal(0, #s.calls)
+            assert.are.equal(0, auth.calls.context)
+        end)
+
+        it("cancelling a Gemini API primary never triggers the secondary", function()
+            AIHelper.settings.primary_ai = { provider = "gemini", model = "gemini-3.5-flash-lite" }
+            AIHelper.settings.secondary_ai = { provider = "chatgpt", model = "gpt-5.4-mini" }
+            AIHelper.callGemini = saved.callGemini
+            AIHelper.makeRequest = function() return nil, "USER_CANCELLED", "Request cancelled" end
+            local res, code = AIHelper:executeUnifiedRequest("p")
+            assert.is_nil(res)
+            assert.are.equal("USER_CANCELLED", code)
+            assert.are.equal(0, #generic_calls)
         end)
 
         it("API-primary still falls back as before", function()

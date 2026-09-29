@@ -1913,3 +1913,7 @@ msgstr "Aggiunge un pulsante 'X-Ray' ai menu del dizionario e di selezione per c
 msgid "yes"
 msgstr "SÌ"
 
+# en-hash: d1591eafbd0b70a04df7b81673b81bfc
+msgid "menu_update_history"
+msgstr "Cronologia aggiornamenti"
+
