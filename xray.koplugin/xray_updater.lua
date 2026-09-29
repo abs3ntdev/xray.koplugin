@@ -49,7 +49,8 @@ local FALLBACKS = {
     updater_btn_download = "Download and install",
     updater_downloading = "Downloading X-Ray %s...",
     updater_err_download = "Download error: %s",
-    updater_err_extract = "Update error: %s. Nothing was changed.",
+    updater_err_extract = "Update error: %s. The previous version was kept.",
+    updater_err_rollback = "Update error: %s. Restoring the previous version failed; backups were left as *.xray-bak files in the plugin folder. Reinstall X-Ray manually.",
     updater_success_restart = "X-Ray %s successfully installed.\n\nRestart KOReader to apply the update?",
     updater_btn_restart = "Restart",
     updater_btn_later = "Later",
@@ -260,6 +261,25 @@ local function _u32(x) if x < 0 then return x + 4294967296 end return x end
 -- Extract one validated entry with `unzip -p` into a flat stage file.
 -- Names are restricted to [A-Za-z0-9._/-], so no glob or shell metacharacter
 -- can reach the command; the output is bounded while reading and verified.
+-- Re-reads a file from disk and checks it against the central directory, so
+-- a short or failed write (e.g. disk full) can never be installed.
+local function _verifyFile(path, entry)
+    local fh = io.open(path, "rb")
+    if not fh then return nil, "cannot read staged file" end
+    local size, crc = 0, 0
+    while true do
+        local chunk = fh:read(CHUNK)
+        if not chunk then break end
+        size = size + #chunk
+        if size > entry.size then fh:close(); return nil, "extracted data mismatch" end
+        crc = _crc32(crc, chunk)
+        if not crc then fh:close(); return nil, "CRC support unavailable" end
+    end
+    fh:close()
+    if size ~= entry.size or _u32(crc) ~= entry.crc then return nil, "extracted data mismatch" end
+    return true
+end
+
 local function _shq(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
 
 local function _extractEntry(zip_path, entry, dest)
@@ -268,20 +288,17 @@ local function _extractEntry(zip_path, entry, dest)
     if not pipe then return nil, "unzip unavailable" end
     local out = io.open(dest, "wb")
     if not out then pipe:close(); return nil, "cannot write staging file" end
-    local size, crc = 0, 0
+    local size = 0
     while true do
         local chunk = pipe:read(CHUNK)
         if not chunk then break end
         size = size + #chunk
         if size > entry.size then out:close(); pipe:close(); return nil, "entry larger than declared" end
-        crc = _crc32(crc, chunk)
-        if not crc then out:close(); pipe:close(); return nil, "CRC support unavailable" end
-        out:write(chunk)
+        if not out:write(chunk) then out:close(); pipe:close(); return nil, "cannot write staging file" end
     end
     pipe:close()
-    out:close()
-    if size ~= entry.size or _u32(crc) ~= entry.crc then return nil, "extracted data mismatch" end
-    return true
+    if not out:close() then return nil, "cannot write staging file" end
+    return _verifyFile(dest, entry)
 end
 
 -- ---------------------------------------------------------------------------
@@ -290,6 +307,24 @@ end
 local function _mode(lfs, path)
     local a = lfs.symlinkattributes(path)
     return a and a.mode
+end
+
+-- Every existing path component (from "/" or "." down to the path itself)
+-- must be a real directory: no symlinked ancestors, no "..".
+local function _plainDirChain(lfs, path)
+    if type(path) ~= "string" or path == "" then return false end
+    for seg in path:gmatch("[^/]+") do
+        if seg == ".." then return false end
+    end
+    local cur = path:sub(1, 1) == "/" and "" or "."
+    if _mode(lfs, cur == "" and "/" or cur) ~= "directory" then return false end
+    for seg in path:gmatch("[^/]+") do
+        if seg ~= "." then
+            cur = cur .. "/" .. seg
+            if _mode(lfs, cur) ~= "directory" then return false end
+        end
+    end
+    return true
 end
 
 local function _copyFile(src, dst)
@@ -301,33 +336,48 @@ local function _copyFile(src, dst)
         if not o:write(c) then i:close(); o:close(); return false end
     end
     i:close()
-    return o:close() ~= nil
+    return o:close() and true or false
 end
 
 local function _writeFile(path, content)
     local o = io.open(path, "wb"); if not o then return false end
     local ok = o:write(content)
-    return (o:close() ~= nil) and ok ~= nil
+    local closed = o:close()
+    return (ok and closed) and true or false
 end
 
 -- ---------------------------------------------------------------------------
--- Install (runs in a subprocess when Trapper is available)
+-- Install
 -- ---------------------------------------------------------------------------
-local function _install(sha)
-    local lfs = _lfs()
-    if not lfs then return { success = false, err = "filesystem support unavailable" } end
-    local plugin = _plugin_dir
-    for seg in plugin:gmatch("[^/]+") do
-        if seg == ".." then return { success = false, err = "unsafe plugin path" } end
+local function _stageDir() return (_settingsDir() or "") .. "/xray_update_stage" end
+
+local function _cleanupStage(lfs)
+    local stage = _stageDir()
+    if _mode(lfs, stage) ~= "directory" then return end
+    -- Only our own flat entries (archive.zip and numbered files) live there.
+    for f in lfs.dir(stage) do
+        if f ~= "." and f ~= ".." then os.remove(stage .. "/" .. f) end
     end
-    local parent = plugin:match("^(.+)/[^/]+$") or "."
-    if _mode(lfs, plugin) ~= "directory" or _mode(lfs, parent) ~= "directory" then
-        return { success = false, err = "plugin directory is not a plain directory" }
+    pcall(lfs.rmdir, stage)
+end
+
+local function _checkPaths(lfs)
+    if not _plainDirChain(lfs, _plugin_dir) then
+        return "plugin directory is not a plain directory"
     end
     local settings = _settingsDir()
-    if not settings or _mode(lfs, settings) ~= "directory" then
-        return { success = false, err = "settings directory unavailable" }
+    if not settings or not _plainDirChain(lfs, settings) then
+        return "settings directory unavailable"
     end
+end
+
+-- Phase 1 (cancellable, may run in a subprocess): download, validate, and
+-- stage verified plugin files. Touches nothing in the plugin directory.
+local function _prepare(sha)
+    local lfs = _lfs()
+    if not lfs then return { success = false, err = "filesystem support unavailable" } end
+    local perr = _checkPaths(lfs)
+    if perr then return { success = false, err = perr } end
     local http = _http()
     if not http then return { success = false, err = "secure transport unavailable" } end
 
@@ -340,30 +390,18 @@ local function _install(sha)
     local entries, zerr = _inspectZip(body, sha)
     if not entries then return { success = false, err = zerr } end
 
-    local stage = settings .. "/xray_update_stage"
-    local stage_files = {}
-    local function cleanupStage()
-        for _, f in ipairs(stage_files) do os.remove(f) end
-        pcall(lfs.rmdir, stage)
-    end
-    if _mode(lfs, stage) == "directory" then
-        -- Leftover from an interrupted run: only our flat numbered files live there.
-        for f in lfs.dir(stage) do
-            if f ~= "." and f ~= ".." then os.remove(stage .. "/" .. f) end
-        end
-        pcall(lfs.rmdir, stage)
-    end
+    local stage = _stageDir()
+    local function cleanupStage() _cleanupStage(lfs) end
+    cleanupStage()
     if _mode(lfs, stage) ~= nil or not lfs.mkdir(stage) or _mode(lfs, stage) ~= "directory" then
         return { success = false, err = "cannot create staging directory" }
     end
     local zip_path = stage .. "/archive.zip"
-    stage_files[#stage_files + 1] = zip_path
     if not _writeFile(zip_path, body) then cleanupStage(); return { success = false, err = "cannot stage archive" } end
     body = nil
 
     for i, e in ipairs(entries) do
         e.staged = stage .. "/" .. i
-        stage_files[#stage_files + 1] = e.staged
         local xok, xerr = _extractEntry(zip_path, e, e.staged)
         if not xok then cleanupStage(); return { success = false, err = xerr } end
         if e.rel == "xray_updater.lua" then
@@ -376,17 +414,54 @@ local function _install(sha)
             end
         end
     end
+    os.remove(zip_path)
+    return { success = true, sha = sha, entries = entries }
+end
+
+-- Phase 2 (NOT cancellable; runs in the UI process): journaled swap.
+local function _commit(prep)
+    local lfs = _lfs()
+    if not lfs then return { success = false, err = "filesystem support unavailable" } end
+    local function cleanupStage() _cleanupStage(lfs) end
+    local perr = _checkPaths(lfs)
+    if perr then cleanupStage(); return { success = false, err = perr } end
+    local plugin, sha, entries = _plugin_dir, prep.sha, prep.entries
+    for _, e in ipairs(entries) do
+        local vok = _verifyFile(e.staged, e)
+        if not vok then cleanupStage(); return { success = false, err = "staged file changed" } end
+    end
 
     -- Transaction: journal every rename so any failure (including the marker
     -- write) restores the previous plugin files exactly.
     local journal = {}
+    -- Returns true only if every journaled change was reverted. On failure
+    -- the remaining *.xray-bak files are left in place for manual recovery.
     local function rollback()
+        local clean = true
         for i = #journal, 1, -1 do
             local j = journal[i]
-            if j.backup then os.rename(j.backup, j.target) else os.remove(j.target) end
+            if j.placed then
+                if j.backup then
+                    if _mode(lfs, j.target) == "file" then os.remove(j.target) end
+                    if not os.rename(j.backup, j.target) then clean = false end
+                elseif not os.remove(j.target) then
+                    clean = false
+                end
+            elseif j.backup then
+                if not os.rename(j.backup, j.target) then clean = false end
+            end
         end
+        return clean
     end
-    local function place(target, src_path, content)
+    local function fail(msg)
+        local clean = rollback()
+        cleanupStage()
+        if not clean then
+            return { success = false, rollback_failed = true, err = msg }
+        end
+        return { success = false, err = msg }
+    end
+    local function place(target, src_path, content, entry_meta)
         local tmode = _mode(lfs, target)
         if tmode ~= nil and tmode ~= "file" then return false end
         local new, bak = target .. ".xray-new", target .. ".xray-bak"
@@ -395,7 +470,9 @@ local function _install(sha)
             if m == "file" then os.remove(side) elseif m ~= nil then return false end
         end
         local wrote = src_path and _copyFile(src_path, new) or (content and _writeFile(new, content))
-        if not wrote then os.remove(new); return false end
+        if not wrote or (entry_meta and not _verifyFile(new, entry_meta)) then
+            os.remove(new); return false
+        end
         local entry = { target = target }
         if tmode == "file" then
             if not os.rename(target, bak) then os.remove(new); return false end
@@ -403,6 +480,7 @@ local function _install(sha)
         end
         journal[#journal + 1] = entry
         if not os.rename(new, target) then os.remove(new); return false end
+        entry.placed = true
         return true
     end
     local function ensureDirs(rel)
@@ -421,20 +499,32 @@ local function _install(sha)
         return true
     end
 
+    -- Retire the old marker first, so an interrupted swap (power loss) reads
+    -- as "unknown", never as the previous commit.
+    local marker = _markerPath()
+    local mmode = _mode(lfs, marker)
+    if mmode ~= nil then
+        if mmode ~= "file" then cleanupStage(); return { success = false, err = "unexpected marker type" } end
+        local mbak = marker .. ".xray-bak"
+        if _mode(lfs, mbak) == "file" then os.remove(mbak) end
+        if _mode(lfs, mbak) ~= nil or not os.rename(marker, mbak) then
+            cleanupStage(); return { success = false, err = "could not retire installed commit" }
+        end
+        journal[#journal + 1] = { target = marker, backup = mbak, placed = false }
+    end
     for _, e in ipairs(entries) do
         local target = plugin .. "/" .. e.rel
         local skip = PRESERVE[e.rel] and _mode(lfs, target) ~= nil
         if not skip then
-            if not ensureDirs(e.rel) or not place(target, e.staged) then
-                rollback(); cleanupStage()
-                return { success = false, err = "could not install " .. e.rel }
+            if not ensureDirs(e.rel) or not place(target, e.staged, nil, e) then
+                return fail("could not install " .. e.rel)
             end
         end
     end
-    if not place(_markerPath(), nil, "source=" .. SOURCE_ID .. "\ncommit=" .. sha .. "\n") then
-        rollback(); cleanupStage()
-        return { success = false, err = "could not record installed commit" }
+    if not place(marker, nil, "source=" .. SOURCE_ID .. "\ncommit=" .. sha .. "\n") then
+        return fail("could not record installed commit")
     end
+    -- The old marker backup is dropped too: the new marker is authoritative.
     for _, j in ipairs(journal) do if j.backup then os.remove(j.backup) end end
     cleanupStage()
     return { success = true }
@@ -443,7 +533,7 @@ end
 -- ---------------------------------------------------------------------------
 -- UI flow
 -- ---------------------------------------------------------------------------
-local function _runTask(fn, msg, on_result, cancelled_key)
+local function _runTask(fn, msg, on_result, cancelled_key, on_cancel)
     local ok_tr, Trapper = pcall(require, "ui/trapper")
     if ok_tr and Trapper and Trapper.dismissableRunInSubprocess then
         local completed, result = Trapper:dismissableRunInSubprocess(fn, msg)
@@ -451,6 +541,7 @@ local function _runTask(fn, msg, on_result, cancelled_key)
             UIManager:scheduleIn(0.2, function() on_result(result) end)
         else
             _closeWidget(msg)
+            if on_cancel then pcall(on_cancel) end
             _toast(t(cancelled_key))
         end
     else
@@ -460,12 +551,20 @@ end
 
 local function _applyUpdate(sha)
     local progress = _toast(t("updater_downloading", _short(sha)), 180)
-    _runTask(function() return _install(sha) end, progress, function(result)
+    _runTask(function() return _prepare(sha) end, progress, function(prep)
         _closeWidget(progress)
+        local result = prep
+        if type(prep) == "table" and prep.success then
+            -- Short, non-dismissable swap in this process; the user cannot
+            -- cancel between moving old files aside and restoring them.
+            result = _commit(prep)
+        end
         if type(result) ~= "table" or not result.success then
             local err = type(result) == "table" and result.err or "unknown error"
             logger.err("xray updater: install failed:", err)
-            if type(result) == "table" and result.unsupported then
+            if type(result) == "table" and result.rollback_failed then
+                _toast(t("updater_err_rollback", tostring(err)), 15)
+            elseif type(result) == "table" and result.unsupported then
                 _toast(t("updater_err_unsupported"), 8)
             elseif type(result) == "table" and result.stage == "download" then
                 _toast(t("updater_err_download", tostring(err)))
@@ -487,7 +586,10 @@ local function _applyUpdate(sha)
             }},
         }
         UIManager:show(dlg)
-    end, "updater_cancelled_update")
+    end, "updater_cancelled_update", function()
+        local lfs = _lfs()
+        if lfs then _cleanupStage(lfs) end
+    end)
 end
 
 -- quiet: weekly background check; only speaks when a newer build exists.

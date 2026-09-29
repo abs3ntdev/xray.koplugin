@@ -260,17 +260,21 @@ describe("xray_updater (fork branch)", function()
 
     it("rolls back every replaced file when a later file cannot be placed", function()
         write(PLUGIN .. "/_meta.lua", "-- old meta")
+        local old_marker = "source=" .. SOURCE .. "\ncommit=" .. SHA_B .. "\n"
+        write(PLUGIN .. "/.xray_fork_commit", old_marker)
         sh("mkdir -p " .. q(PLUGIN .. "/prompts/en.lua"))   -- directory where a file must go
         net.zip = archive(SHA_A)
         updater.checkForUpdates(nil)
         press_install()
         assert.truthy(text(last()):find("could not install", 1, true))
+        assert.truthy(text(last()):find("previous version was kept", 1, true))
         assert.are.equal("-- old main", read(PLUGIN .. "/main.lua"))
         assert.are.equal("-- old meta", read(PLUGIN .. "/_meta.lua"))
         assert.are.equal(updater_source, read(PLUGIN .. "/xray_updater.lua"))
         assert.are.equal("return { gemini_api_key = 'SENTINEL-KEY' }", read(PLUGIN .. "/xray_config.lua"))
-        assert.is_false(exists(PLUGIN .. "/.xray_fork_commit"))
+        assert.are.equal(old_marker, read(PLUGIN .. "/.xray_fork_commit"))
         assert.is_false(exists(PLUGIN .. "/main.lua.xray-bak"))
+        assert.is_false(exists(PLUGIN .. "/.xray_fork_commit.xray-bak"))
     end)
 
     it("refuses to install through a symlinked plugin directory", function()
@@ -280,5 +284,51 @@ describe("xray_updater (fork branch)", function()
         press_install()
         assert.truthy(text(last()):find("not a plain directory", 1, true))
         assert.are.equal("-- old main", read(BASE .. "/real/main.lua"))
+    end)
+
+    it("refuses to install below a symlinked grandparent directory", function()
+        -- <BASE>/link -> real ; plugin loaded as <BASE>/link/plugins/xray.koplugin
+        sh("mkdir -p " .. q(BASE .. "/real") .. " && mv " .. q(BASE .. "/plugins") .. " "
+            .. q(BASE .. "/real/plugins") .. " && ln -s real " .. q(BASE .. "/link"))
+        updater = dofile(BASE .. "/link/plugins/xray.koplugin/xray_updater.lua")
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        press_install()
+        assert.truthy(text(last()):find("not a plain directory", 1, true))
+        assert.are.equal("-- old main", read(BASE .. "/real/plugins/xray.koplugin/main.lua"))
+    end)
+
+    it("keeps the dismissable phase read-only and leaves files alone when cancelled", function()
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        local during
+        package.loaded["ui/trapper"] = {
+            dismissableRunInSubprocess = function(_, task)
+                task()                       -- the work a user may kill at any point
+                during = read(PLUGIN .. "/main.lua")
+                return false                 -- user dismissed
+            end,
+        }
+        press_install()
+        assert.are.equal("-- old main", during)
+        assert.truthy(text(last()):find("cancelled", 1, true))
+        unchanged()
+    end)
+
+    it("does not install a staged file that differs from the archive", function()
+        net.zip = archive(SHA_A)
+        updater.checkForUpdates(nil)
+        -- Download/stage runs, then the staged copy is truncated (e.g. disk
+        -- full) before the swap; the swap must refuse it.
+        package.loaded["ui/trapper"] = {
+            dismissableRunInSubprocess = function(_, task)
+                local res = task()
+                local f = io.open(SETTINGS .. "/xray_update_stage/1", "wb"); f:close()
+                return true, res
+            end,
+        }
+        press_install()
+        assert.truthy(text(last()):find("staged file changed", 1, true))
+        unchanged()
     end)
 end)
