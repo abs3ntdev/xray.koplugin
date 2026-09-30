@@ -2,7 +2,7 @@
 
 Every push to `main` triggers the existing **Release** workflow, including
 workflow/documentation-only changes. It uses pinned npm `semantic-release` and
-the official commit-analyzer, release-notes-generator and GitHub plugins.
+the official commit-analyzer, release-notes-generator, exec and GitHub plugins.
 There are no release commits, package publishing, version-file rewrites, PR
 triggers or tag-trigger loops. The workflow checks out the exact pushed SHA.
 
@@ -39,9 +39,14 @@ prefix and are not recognized by the new tag format. The workflow explicitly
 checks the baseline tag and SHA, refusing to fall back silently to `1.0.0`.
 The first CI-only migration commit after the baseline produces `v26.9.30`.
 
-Release tags are distribution versions. `_meta.lua` remains unchanged legacy
-in-app metadata, so archive bytes still match the pushed source commit exactly.
-No generated commit can retrigger another release.
+Release tags and installed metadata agree: the official exec `prepare` hook
+packages only after semantic-release calculates `nextRelease.version`. It stamps
+that version (without the tag's `v` prefix) into **the ZIP's `_meta.lua` only**.
+Storefront compares this installed version to its catalog version, so leaving
+the old `26.9.29-beta` value in a newer release would cause repeated update prompts.
+The source/worktree `_meta.lua` stays unchanged and every other packaged file
+remains byte-identical to its committed blob. No generated commit can retrigger
+another release.
 
 ## Concurrency and reruns
 
@@ -81,12 +86,17 @@ personalized template. New asset types/directories need explicit packaging suppo
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 npm run test:release
-python3 tools/package_release.py "$(git rev-parse HEAD)" xray.koplugin.zip
+python3 tools/package_release.py "$(git rev-parse HEAD)" xray.koplugin.zip 26.9.31
 ```
 
-Node 24.10+ and Python 3.11+ are required. Packaging verifies entrypoints, ZIP
-integrity, paths and bytes against Git. Fixed ZIP metadata and stored entries
-make identical-source reruns byte-identical. Only `contents: write` is granted
+Node 24.10+ and Python 3.11+ are required. The example version is explicit for
+local reproduction; CI always passes semantic-release's calculated version.
+Omitting that optional argument makes an unstamped source archive, not a release.
+Packaging accepts only stable `MAJOR.MINOR.PATCH`, requires exactly one metadata
+version field, and verifies entrypoints, ZIP integrity and every output byte
+against the committed payload plus that one metadata substitution. Fixed ZIP
+metadata and stored entries make identical-source/version reruns byte-identical.
+Only `contents: write` is granted
 to `GITHUB_TOKEN`, only for the main-push workflow. GitHub issue creation,
 comments, issue closure, labels and release references on PRs are disabled.
 No personal token is needed.

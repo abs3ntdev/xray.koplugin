@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { analyzeCommits } from '@semantic-release/commit-analyzer';
 import { success, fail } from '@semantic-release/github';
+import { prepare } from '@semantic-release/exec';
 import semanticRelease from 'semantic-release';
 import config from '../release.config.cjs';
 
@@ -52,9 +53,52 @@ test('GitHub success/failure hooks require no issue or PR endpoints', async () =
     nextRelease: { version: '26.9.30', gitTag: 'v26.9.30' },
     releases: [], errors: [], branch: { name: 'main' },
   };
-  await success(config.plugins[2][1], context, { Octokit: ReadOnlyOctokit });
-  await fail(config.plugins[2][1], context, { Octokit: ReadOnlyOctokit });
+  const githubOptions = config.plugins.find(([name]) => name === '@semantic-release/github')[1];
+  await success(githubOptions, context, { Octokit: ReadOnlyOctokit });
+  await fail(githubOptions, context, { Octokit: ReadOnlyOctokit });
   assert.ok(requests.length > 0);
+});
+
+test('official prepare stamps Storefront version in the ZIP and preserves every other source byte', async () => {
+  const gitHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const plugin = config.plugins.find(([name]) => name === '@semantic-release/exec')[1];
+  await prepare(plugin, {
+    cwd: process.cwd(), env: process.env, stdout: process.stdout, stderr: process.stderr,
+    logger, nextRelease: { gitHead, version: '42.7.9' },
+  });
+  execFileSync('python3', ['-c', String.raw`
+import hashlib, pathlib, re, shutil, subprocess, zipfile
+sha = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip()
+files = {}
+for entry in subprocess.check_output(['git', 'ls-tree', '-rz', sha, '--', 'xray.koplugin']).split(b'\0'):
+    if entry:
+        metadata, name = entry.split(b'\t', 1)
+        files[name.decode()] = metadata.decode().split()[2]
+with zipfile.ZipFile('xray.koplugin.zip') as archive:
+    assert archive.testzip() is None
+    assert set(archive.namelist()) == set(files)
+    for name, oid in files.items():
+        actual = archive.read(name)
+        if name == 'xray.koplugin/_meta.lua':
+            source = subprocess.check_output(['git', 'cat-file', 'blob', oid])
+            pattern = rb'version\s*=\s*"([^"\r\n]+)"'
+            old_version = re.search(pattern, source).group(1)
+            assert re.search(pattern, actual).group(1) == b'42.7.9'
+            assert actual.replace(b'42.7.9', old_version) == source
+            assert pathlib.Path(name).read_bytes() == source
+        else:
+            assert hashlib.sha1(b'blob ' + str(len(actual)).encode() + b'\0' + actual).hexdigest() == oid, name
+    if shutil.which('luac'):
+        for name in ('main.lua', '_meta.lua'):
+            subprocess.run(['luac', '-p', '-'], input=archive.read('xray.koplugin/' + name), check=True)
+original = pathlib.Path('xray.koplugin.zip').read_bytes()
+subprocess.run(['python3', 'tools/package_release.py', sha, 'xray.koplugin.zip', '42.7.9'], check=True, stdout=subprocess.PIPE)
+assert pathlib.Path('xray.koplugin.zip').read_bytes() == original
+for invalid in ('v42.7.9', '42.7.9-beta', '42.7', '01.2.3', '42.7.9;echo unsafe'):
+    result = subprocess.run(['python3', 'tools/package_release.py', sha, 'xray.koplugin.zip', invalid], capture_output=True)
+    assert result.returncode != 0
+    assert pathlib.Path('xray.koplugin.zip').read_bytes() == original
+`], { stdio: 'inherit' });
 });
 
 // Exercise maintained semantic-release itself with real local Git remotes.

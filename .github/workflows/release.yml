@@ -46,11 +46,6 @@ jobs:
           # Refuse semantic-release's default 1.0.0 if bootstrap was missed.
           test "$(git rev-parse 'v26.9.29^{commit}')" = 9fd6efb6e78ec32230694bc4d4759f76073ee130
 
-      - name: Package committed plugin
-        env:
-          PUSH_SHA: ${{ github.sha }}
-        run: python3 tools/package_release.py "$PUSH_SHA" xray.koplugin.zip
-
       - name: Publish semantic release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

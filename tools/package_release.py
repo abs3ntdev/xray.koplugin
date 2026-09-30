@@ -43,9 +43,12 @@ def git(*args):
 
 
 def main():
-    if len(sys.argv) != 3 or not re.fullmatch(r"[0-9a-f]{40}", sys.argv[1]):
-        raise SystemExit("Usage: package_release.py <full-commit-sha> <output.zip>")
-    sha, output = sys.argv[1:]
+    if len(sys.argv) not in {3, 4} or not re.fullmatch(r"[0-9a-f]{40}", sys.argv[1]):
+        raise SystemExit("Usage: package_release.py <full-commit-sha> <output.zip> [release-version]")
+    sha, output = sys.argv[1:3]
+    version = sys.argv[3] if len(sys.argv) == 4 else None
+    if version is not None and not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
+        raise SystemExit("Release version must be a stable MAJOR.MINOR.PATCH")
     if git("rev-parse", f"{sha}^{{commit}}").decode().strip() != sha:
         raise SystemExit("Expected an exact commit SHA")
     files = {}
@@ -65,6 +68,17 @@ def main():
     required = {f"{ROOT}/{name}" for name in ("main.lua", "_meta.lua", "xray_config.lua")}
     if not required <= files.keys():
         raise SystemExit("Missing required Lua entrypoints or public config template")
+    if version is not None:
+        # Storefront compares installed _meta.version with the release tag.
+        # Change this one archive field only, never the committed/worktree file.
+        metadata = f"{ROOT}/_meta.lua"
+        files[metadata], count = re.subn(
+            rb'(?m)^(\s*version\s*=\s*")[^"\r\n]*("\s*,?\s*)$',
+            lambda match: match[1] + version.encode("ascii") + match[2],
+            files[metadata],
+        )
+        if count != 1:
+            raise SystemExit("Expected exactly one metadata version field")
     # Fixed metadata and no compression make reruns byte-identical across zlib versions.
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for name, content in sorted(files.items()):
@@ -80,7 +94,8 @@ def main():
                 raise SystemExit(f"Archive differs from committed source: {name}")
     with open(output, "rb") as archive:
         digest = hashlib.file_digest(archive, "sha256").hexdigest()
-    print(f"Verified {len(files)} committed files at {sha}: {output} (sha256:{digest})")
+    suffix = f" (release version {version})" if version is not None else ""
+    print(f"Verified {len(files)} committed files at {sha}{suffix}: {output} (sha256:{digest})")
 
 
 if __name__ == "__main__":

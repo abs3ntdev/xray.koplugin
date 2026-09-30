@@ -19,6 +19,9 @@ module.exports = {
       ],
     }],
     ['@semantic-release/release-notes-generator', { parserOpts }],
+    ['@semantic-release/exec', {
+      prepareCmd: 'python3 tools/package_release.py "${nextRelease.gitHead}" xray.koplugin.zip "${nextRelease.version}"',
+    }],
     ['@semantic-release/github', {
       assets: [{ path: 'xray.koplugin.zip', label: 'Installable KOReader plugin' }],
       draftRelease: false,
