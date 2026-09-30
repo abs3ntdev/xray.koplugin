@@ -1,7 +1,5 @@
 # X-Ray Plugin for KOReader
 
-hello
-
 ![Platform](https://img.shields.io/badge/platform-KOReader-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 ![Status](https://img.shields.io/badge/status-active-brightgreen.svg)
