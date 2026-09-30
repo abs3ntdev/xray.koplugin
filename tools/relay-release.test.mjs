@@ -35,9 +35,13 @@ test('release image job is gated and PR workflow cannot publish', async () => {
   const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const pr = await readFile(new URL('../.github/workflows/relay-checks.yml', import.meta.url), 'utf8');
   assert.match(release, /needs: build/);
-  assert.ok(release.indexOf('bash tools/smoke-relay-image.sh') < release.indexOf('run: npm run release'));
-  assert.ok(release.indexOf('luajit tools/spec_runner.lua') < release.indexOf('run: npm run release'));
-  assert.match(pr, /bash tools\/smoke-relay-image.sh/);
+  assert.match(release, /docker build -t xray-relay:test \./);
+  assert.ok(release.indexOf('docker build -t xray-relay:test .') < release.indexOf('run: npm run release'));
+  assert.match(pr, /docker build -t xray-relay:test \./);
+  for (const workflow of [release, pr]) {
+    assert.doesNotMatch(workflow, /npm run test:|luajit tools\/spec_runner\.lua|bash tools\/smoke-relay-image\.sh/);
+    assert.doesNotMatch(workflow, /apt-get install.*luajit/);
+  }
   assert.match(release, /needs.build.outputs.release_tag != ''/);
   assert.match(release, /packages: write/);
   assert.match(release, /tools\/relay-release-metadata.mjs/);
