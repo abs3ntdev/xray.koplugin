@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!LICENSE
+!relay/
+!relay/app.mjs
+!relay/server.mjs
+!cloudflare-worker/
+!cloudflare-worker/worker.js
+!cloudflare-worker/package.json

@@ -11,7 +11,7 @@
 local name = ... or "xray_code_transfer"
 local prefix = name:match("^(.*[/%.])") or ""
 
-local RELAY = "https://xray-setup.ultimatejimmy.workers.dev"
+local RelayConfig = require(prefix .. "xray_relay_config")
 local MAX_LIFETIME = 600
 local MAX_RESPONSE = 16384
 local MAX_B64 = 8192
@@ -23,6 +23,7 @@ local Transfer = {}
 local messages = {
     entropy_unavailable = "A secure random key could not be generated on this device.",
     invalid_request = "The phone transfer could not be started.",
+    invalid_relay = RelayConfig.ERROR,
     relay_error = "The phone transfer relay could not be reached. Check Wi-Fi and try again.",
     expired = "The phone transfer expired. Start again.",
     cancelled = "The phone transfer was cancelled.",
@@ -104,7 +105,12 @@ local function json()
     return require("json")
 end
 
-function Transfer:start(expires_at)
+function Transfer:generateSecret()
+    local raw = randomBytes(self)
+    return raw and toHex(raw) or nil
+end
+
+function Transfer:start(expires_at, settings)
     local current = now(self)
     expires_at = tonumber(expires_at)
     if not current or not expires_at or expires_at ~= expires_at or expires_at <= current then
@@ -112,11 +118,12 @@ function Transfer:start(expires_at)
     end
     if expires_at > current + MAX_LIFETIME then expires_at = current + MAX_LIFETIME end
     -- Entropy must be available before any network request is made.
-    local raw = randomBytes(self)
-    if not raw then return failure("entropy_unavailable") end
-    local secret = toHex(raw)
+    local relay = RelayConfig.resolve(settings or self.settings)
+    if not relay then return failure("invalid_relay") end
+    local secret = self:generateSecret()
+    if not secret then return failure("entropy_unavailable") end
     local transport = self.http or require(prefix .. "xray_secure_http")
-    local ok, status, body = transport:request(RELAY .. "/api/session/create", "POST",
+    local ok, status, body = transport:requestRelay(relay, "/api/session/create", "POST",
         { ["Content-Type"] = "application/json", ["Accept"] = "application/json" }, "{}", 10)
     if not ok or status ~= 200 or type(body) ~= "string" or #body > MAX_RESPONSE then
         return failure("relay_error")
@@ -129,8 +136,8 @@ function Transfer:start(expires_at)
     local after = now(self)
     if not after or after >= expires_at then return failure("expired") end
     return {
-        id = id, expires_at = expires_at,
-        url = RELAY .. "/?s=" .. id .. "#" .. secret,
+        id = id, expires_at = expires_at, relay_url = relay,
+        url = relay .. "/?s=" .. id .. "#" .. secret,
         secret = secret,
     }
 end
@@ -148,10 +155,12 @@ function Transfer:poll(session)
     if type(secret) ~= "string" or type(id) ~= "string" or not id:match("^[A-Z0-9]+$") or #id ~= 6 then
         return failure("invalid_request")
     end
+    local relay = RelayConfig.normalize(session.relay_url)
+    if not relay then return failure("invalid_relay") end
     local transport = self.http or require(prefix .. "xray_secure_http")
     -- Short, deadline-capped timeout limits how long a poll can block the UI.
     local timeout = math.max(1, math.min(4, session.expires_at - current))
-    local ok, status, body = transport:request(RELAY .. "/api/session/" .. id .. "/poll", "GET",
+    local ok, status, body = transport:requestRelay(relay, "/api/session/" .. id .. "/poll", "GET",
         { ["Accept"] = "application/json" }, nil, timeout)
     -- The session may have been cancelled or expired while the request ran.
     if session.cancelled then return failure("cancelled") end

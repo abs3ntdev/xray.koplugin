@@ -3,8 +3,8 @@
 Every push to `main` triggers the existing **Release** workflow, including
 workflow/documentation-only changes. It uses pinned npm `semantic-release` and
 the official commit-analyzer, release-notes-generator, exec and GitHub plugins.
-There are no release commits, package publishing, version-file rewrites, PR
-triggers or tag-trigger loops. The workflow checks out the exact pushed SHA.
+There are no release commits, npm package publishing, version-file rewrites or
+tag-trigger loops. A separate read-only PR workflow tests the relay and plugin. The workflow checks out the exact pushed SHA.
 
 ## Version policy
 
@@ -96,11 +96,41 @@ Packaging accepts only stable `MAJOR.MINOR.PATCH`, requires exactly one metadata
 version field, and verifies entrypoints, ZIP integrity and every output byte
 against the committed payload plus that one metadata substitution. Fixed ZIP
 metadata and stored entries make identical-source/version reruns byte-identical.
-Only `contents: write` is granted
-to `GITHUB_TOKEN`, only for the main-push workflow. GitHub issue creation,
+The semantic-release job grants only `contents: write` to `GITHUB_TOKEN`.
+The separate container image job grants `contents: read` and `packages: write`.
+Both publishing jobs run only in the main-push Release workflow. GitHub issue creation,
 comments, issue closure, labels and release references on PRs are disabled.
 No personal token is needed.
 
 This does not change the fork's in-app updater, its `openai-subscription` branch,
 device settings or account state. `tools/release.py` is an older manual helper,
 not part of semantic-release automation.
+
+
+## Unraid relay image
+
+Before semantic-release runs, the workflow passes the release-policy tests,
+Node relay tests, Lua plugin suite and non-root read-only Docker smoke test.
+After semantic-release succeeds, the workflow selects a published stable release
+whose tag points to the exact pushed checkout. A separate image job checks out
+that verified tag, checks its SHA again, and publishes the root Dockerfile to
+`ghcr.io/abs3ntdev/xray.koplugin` for `linux/amd64`.
+
+Every selected release publishes `vMAJOR.MINOR.PATCH` and `MAJOR.MINOR.PATCH`.
+The mutable `latest` tag is included only when that release is still GitHub's
+latest published stable release. No draft, prerelease, missing release or
+mismatched checkout can select image tags. Using the same workflow is deliberate:
+release events created with `GITHUB_TOKEN` do not start a separate release-event
+workflow. Existing workflow concurrency covers both publishing jobs.
+
+If only image publishing fails, rerun the failed image job. Rerunning the entire
+workflow also reselects the published release at the exact checkout without
+allocating a new plugin version. Main advancing does not suppress an already
+published version's image. An older release rerun can repair its version tags
+but does not move `latest` backwards. The image job rechecks the exact expected
+release and latest eligibility before publication, including failed-job reruns.
+
+The first GHCR publication may need the package owner to make the package
+public for anonymous Unraid pulls. The workflow does not change visibility or
+require a personal access token. See [Unraid setup](self-hosted-relay.md) for the
+image name, ports, environment and Pangolin routing.

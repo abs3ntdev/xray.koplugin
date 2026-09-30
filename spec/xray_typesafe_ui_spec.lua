@@ -57,7 +57,8 @@ describe("TypeSafe settings UI", function()
         end
         transfer = {
             started = 0, cancelled = {}, polls = 0, results = {},
-            start = function(self) self.started = self.started + 1
+            start = function(self, expires_at, settings) self.started = self.started + 1
+                self.settings = settings
                 return { url = "https://xray-setup.ultimatejimmy.workers.dev/?s=ABCDEF#" .. string.rep("a", 64), secret = "s" } end,
             poll = function(self)
                 self.polls = self.polls + 1
@@ -144,8 +145,11 @@ describe("TypeSafe settings UI", function()
     end)
 
     it("phone transfer saves only the TypeSafe key, ignoring carrier provider, and never enables", function()
+        AIHelper.settings.cloud_setup_worker_url = "https://owned.example.com"
         package.loaded["xray_websetup"] = setmetatable({}, { __index = function() error("generic WebSetup must not be used") end })
         ui:startPhone()
+        assert.are.equal(AIHelper.settings, transfer.settings)
+        assert.are.equal("https://owned.example.com", transfer.settings.cloud_setup_worker_url)
         local session = ui.receiver.session
         local qr = ui.dialog
         local kids = qr.args._added_widgets[1].args
