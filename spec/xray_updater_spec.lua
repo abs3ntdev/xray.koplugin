@@ -8,7 +8,7 @@ require("spec/spec_helper")
 
 local SHA_A = string.rep("a", 40)
 local SHA_B = string.rep("b", 40)
-local SOURCE = "github:abs3ntdev/xray.koplugin@openai-subscription"
+local SOURCE = "github:abs3ntdev/xray.koplugin@main"
 local BASE = "scratch/updater_spec"           -- relative on purpose (gitignored)
 local PLUGIN = BASE .. "/plugins/xray.koplugin"
 local SETTINGS = BASE .. "/settings"
@@ -63,7 +63,9 @@ describe("xray_updater (fork branch)", function()
             requestPublic = function(_, url, headers)
                 net.calls[#net.calls + 1] = { url = url, headers = headers }
                 if net.fail then return nil, "network_error" end
-                if url:find("^https://api%.github%.com/") then return true, 200, net.head .. "\n", {} end
+                if url == "https://api.github.com/repos/abs3ntdev/xray.koplugin/commits/main" then
+                    return true, 200, net.head .. "\n", {}
+                end
                 if url == "https://codeload.github.com/abs3ntdev/xray.koplugin/zip/" .. net.head then
                     return true, 200, net.zip, {}
                 end
@@ -134,7 +136,8 @@ describe("xray_updater (fork branch)", function()
         updater.checkForUpdates(nil)
         local prompt = text(last())
         assert.truthy(prompt:find("unknown", 1, true))
-        assert.truthy(prompt:find("abs3ntdev/xray.koplugin (openai-subscription)", 1, true))
+        assert.truthy(prompt:find("abs3ntdev/xray.koplugin (main)", 1, true))
+        assert.are.equal("https://api.github.com/repos/abs3ntdev/xray.koplugin/commits/main", net.calls[1].url)
         press_install()
 
         assert.are.equal("-- main " .. SHA_A, read(PLUGIN .. "/main.lua"))
@@ -191,6 +194,38 @@ describe("xray_updater (fork branch)", function()
         updater.checkForUpdates(nil)
         assert.are.equal("ButtonDialog", last().type)
         assert.truthy(text(last()):find("unknown", 1, true))
+    end)
+
+    it("migrates an old branch marker to main only after confirmation and preserves user data", function()
+        local old_marker = "source=github:abs3ntdev/xray.koplugin@openai-subscription\ncommit=" .. SHA_A .. "\n"
+        write(PLUGIN .. "/.xray_fork_commit", old_marker)
+        write(SETTINGS .. "/xray/settings.json", '{"cloud_setup_worker_url":"https://xray.example.com"}')
+        write(SETTINGS .. "/xray/openai_auth.json", "synthetic saved account data")
+        net.zip = archive(SHA_A)
+
+        updater.checkSilentForUpdates(nil)
+        assert.are.equal(0, #_G.ui_tracker.shown)
+        assert.are.equal(old_marker, read(PLUGIN .. "/.xray_fork_commit"))
+        updater.checkForUpdates(nil)
+        assert.are.equal("ButtonDialog", last().type)
+        assert.truthy(text(last()):find("unknown", 1, true))
+        assert.truthy(text(last()):find("abs3ntdev/xray.koplugin (main)", 1, true))
+        assert.are.equal("-- old main", read(PLUGIN .. "/main.lua"))
+        assert.are.equal(old_marker, read(PLUGIN .. "/.xray_fork_commit"))
+        assert.are.equal(2, #net.calls) -- checks only; no download without confirmation
+
+        press_install()
+        assert.are.equal("source=" .. SOURCE .. "\ncommit=" .. SHA_A .. "\n", read(PLUGIN .. "/.xray_fork_commit"))
+        assert.are.equal("return { gemini_api_key = 'SENTINEL-KEY' }", read(PLUGIN .. "/xray_config.lua"))
+        assert.are.equal('{"cloud_setup_worker_url":"https://xray.example.com"}', read(SETTINGS .. "/xray/settings.json"))
+        assert.are.equal("synthetic saved account data", read(SETTINGS .. "/xray/openai_auth.json"))
+
+        -- The installed updater must keep following main after a restart.
+        updater = dofile(PLUGIN .. "/xray_updater.lua")
+        updater.checkForUpdates(nil)
+        assert.are.equal("InfoMessage", last().type)
+        assert.truthy(text(last()):find("up to date", 1, true))
+        assert.are.equal("https://api.github.com/repos/abs3ntdev/xray.koplugin/commits/main", net.calls[#net.calls].url)
     end)
 
     it("reports a failed check truthfully and changes nothing", function()

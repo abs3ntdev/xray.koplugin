@@ -102,9 +102,11 @@ Both publishing jobs run only in the main-push Release workflow. GitHub issue cr
 comments, issue closure, labels and release references on PRs are disabled.
 No personal token is needed.
 
-This does not change the fork's in-app updater, its `openai-subscription` branch,
-device settings or account state. `tools/release.py` is an older manual helper,
-not part of semantic-release automation.
+Release automation is separate from the fork's in-app updater, which follows
+the `main` branch by commit rather than release version. Older builds following
+`openai-subscription` need the [one-time migration](fork-updater.md#one-time-migration-from-openai-subscription).
+Device settings and account state are not changed. `tools/release.py` is an
+older manual helper, not part of semantic-release automation.
 
 
 ## Unraid relay image

@@ -14,7 +14,7 @@ local plugin_path = ((...) or ""):match("(.-)[^%.]+$") or ""
 -- ---------------------------------------------------------------------------
 -- Source identity (fixed; never derived from the network)
 -- ---------------------------------------------------------------------------
-local OWNER, REPO, BRANCH = "abs3ntdev", "xray.koplugin", "openai-subscription"
+local OWNER, REPO, BRANCH = "abs3ntdev", "xray.koplugin", "main"
 local SOURCE_ID    = "github:" .. OWNER .. "/" .. REPO .. "@" .. BRANCH
 local CAPABILITY   = "XRAY_FORK_UPDATER_" .. "V1"
 local MARKER_NAME  = ".xray_fork_commit"
