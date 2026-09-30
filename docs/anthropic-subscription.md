@@ -26,7 +26,7 @@ Closing or cancelling any dialog during sign-in invalidates the pending flow.
 
 Sign-in requests these scopes: `org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`. Refresh requests the same set without `org:create_api_key`. Only `user:inference` is required: if the service returns granted scopes, a token missing it is rejected. If the response has no scope field, entitlement stays unverified until the first request. X-Ray does not create API keys and makes no profile, session, MCP or file-upload calls. The full set is kept because it is Claude Code's compatibility string, and the pinned source (Jcode 02777ce1) does not show that a smaller set is accepted. This was not tested live.
 
-Technically, the grant lets whoever holds the token do all of those things. The token is stored unencrypted on the reader, so treat physical or USB access to it as account access. Network use is limited to `platform.claude.com` (token) and `api.anthropic.com` (Messages), plus the optional pinned X-Ray relay (`xray-setup.ultimatejimmy.workers.dev`) only if you use phone transfer.
+Technically, the grant lets whoever holds the token do all of those things. The token is stored unencrypted on the reader, so treat physical or USB access to it as account access. Network use is limited to `platform.claude.com` (token) and `api.anthropic.com` (Messages), plus the separately configured X-Ray setup relay only if you use phone transfer. The upstream relay is the default; [self-hosted relay settings](self-hosted-relay.md) never expand the token/model host allowlist.
 
 ## Limits
 

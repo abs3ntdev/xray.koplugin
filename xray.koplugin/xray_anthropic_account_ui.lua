@@ -233,7 +233,7 @@ end
 
 function M:startReceiver(generation, flow, qr_dialog)
     local function stale() return self.generation ~= generation or self.flow ~= flow or flow.cancelled end
-    local session, _, message = self:transferService():start(flow.expires_at)
+    local session, _, message = self:transferService():start(flow.expires_at, self.plugin.ai_helper and self.plugin.ai_helper.settings)
     if stale() then
         if session then pcall(self.transferService(self).cancel, self.transfer, session) end
         return

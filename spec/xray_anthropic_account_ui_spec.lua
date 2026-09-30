@@ -197,7 +197,8 @@ describe("Claude account UI", function()
             end
             transfer = {
                 started = {}, cancelled = {}, polls = 0, results = {},
-                start = function(self, exp)
+                start = function(self, exp, settings)
+                    self.settings = settings
                     table.insert(self.started, exp)
                     return { url = "https://relay.example/?s=ID#" .. string.rep("a", 64), secret = "s" }
                 end,
@@ -224,8 +225,10 @@ describe("Claude account UI", function()
         end
 
         it("shows second QR with unmistakable directions and polls without blocking", function()
-            local flow_exp
+            ui.plugin.ai_helper.settings.cloud_setup_worker_url = "https://owned.example.com"
             local d = toReceiver()
+            assert.are.equal(ui.plugin.ai_helper.settings, transfer.settings)
+            assert.are.equal("https://owned.example.com", transfer.settings.cloud_setup_worker_url)
             assert.are.equal(ui.flow.expires_at, transfer.started[1])
             local kids = d.args._added_widgets[1].args
             local text = kids[#kids].args.text

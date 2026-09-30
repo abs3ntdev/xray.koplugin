@@ -248,28 +248,52 @@ describe("Verified subscription HTTP", function()
         assert.is_nil(ok)
         assert.are.equal("tls_failed", code)
     end)
-    it("allows only the exact pinned setup relay host with verified TLS", function()
-        local relay = "xray-setup.ultimatejimmy.workers.dev"
-        config.names = { "*.ultimatejimmy.workers.dev" }
-        local ok, status = request("https://" .. relay .. "/api/session/AB12CD/poll")
-        assert.is_true(ok)
-        assert.are.equal(200, status)
-        assert.are.equal(relay, seen.sni)
-        assert.are.equal("peer", seen.options.verify)
-        config.names = { "*.workers.dev" }
-        local bad, code = request("https://" .. relay .. "/api/session/create")
-        assert.is_nil(bad)
-        assert.are.equal("tls_failed", code)
-        local connects = seen.connects
-        for _, url in ipairs({ "https://evil.ultimatejimmy.workers.dev/", "https://ultimatejimmy.workers.dev/",
-            "https://x.xray-setup.ultimatejimmy.workers.dev/", "https://xray-setup.ultimatejimmy.workers.dev.evil/",
-            "http://" .. relay .. "/", "https://" .. relay .. ":443/", "https://" .. relay .. "/#secret",
-            "https://XRAY-SETUP.ultimatejimmy.workers.dev/", "https://" .. relay }) do
-            local denied, reason = request(url)
-            assert.is_nil(denied)
-            assert.are.equal("invalid_url", reason)
+    it("isolates the configured relay from credential-bearing auth requests", function()
+        for _, origin in ipairs({ "https://xray.example.com", "https://xray-setup.ultimatejimmy.workers.dev" }) do
+            local host = origin:sub(9)
+            config.names = { host }
+            local ok, status = HTTP:requestRelay(origin, "/api/session/create", "POST", {}, "{}", 10)
+            assert.is_true(ok) assert.are.equal(200, status)
+            assert.are.equal(host, seen.sni)
+            assert.are.equal(origin .. "/api/session/create", seen.request.url)
+            assert.are.equal("peer", seen.options.verify)
+            assert.is_false(seen.request.redirect)
+            local denied, reason = request(origin .. "/api/session/create")
+            assert.is_nil(denied) assert.are.equal("invalid_url", reason)
         end
-        assert.are.equal(connects, seen.connects)
+        config.names = { "*.example.com" }
+        assert.is_true(HTTP:requestRelay("https://xray.example.com", "/api/session/AB12CD/poll", "GET", {}, nil, 4))
+    end)
+    it("never widens token hosts after a relay call and rejects relay credentials and arbitrary paths", function()
+        config.names = { "xray.example.com" }
+        local origin = "https://xray.example.com"
+        for _, headers in ipairs({ { Authorization = "Bearer FAKE-SECRET" }, { Cookie = "FAKE" },
+            { ["X-Api-Key"] = "FAKE" }, { ["X-Goog-Api-Key"] = "FAKE" },
+            { ["Anthropic-Api-Key"] = "FAKE" }, { Host = "evil.example" }, { ["Proxy-Authorization"] = "FAKE" } }) do
+            assert.is_nil(HTTP:requestRelay(origin, "/api/session/create", "POST", headers, "{}", 10))
+        end
+        for _, path in ipairs({ "/oauth/token", "//evil.example/", "/api/session/AB12CD/poll?token=FAKE",
+            "/api/session/../poll", "/api/session/AB12CD/poll#secret" }) do
+            assert.is_nil(HTTP:requestRelay(origin, path, "GET", {}, nil, 10))
+        end
+        assert.is_nil(HTTP:requestRelay(origin, "/api/session/create", "POST", {}, '{"token":"FAKE"}', 10))
+        assert.is_nil(HTTP:requestRelay("http://xray.example.com", "/api/session/create", "POST", {}, "{}", 10))
+        assert.are.equal(0, seen.connects)
+        assert.is_true(HTTP:requestRelay(origin, "/api/session/create", "POST", {}, "{}", 10))
+        assert.is_nil(request(origin .. "/oauth/token"))
+        config.names = { "auth.openai.com" }
+        assert.is_true(request())
+    end)
+    it("requires the configured relay's certificate and rejects redirects", function()
+        config.names = { "evil.example" }
+        local ok, reason = HTTP:requestRelay("https://xray.example.com", "/api/session/create", "POST", {}, "{}", 10)
+        assert.is_nil(ok) assert.are.equal("tls_failed", reason)
+        assert.are.equal(0, seen.sends)
+        config.names = { "xray.example.com" }
+        config.status = 302
+        ok, reason = HTTP:requestRelay("https://xray.example.com", "/api/session/create", "POST", {}, "{}", 10)
+        assert.is_nil(ok) assert.are.equal("redirect_rejected", reason)
+        assert.is_false(seen.request.redirect)
     end)
     it("rejects unpinned Anthropic and Claude hosts before connecting", function()
         local connects = seen.connects

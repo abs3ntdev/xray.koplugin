@@ -30,14 +30,14 @@ local function logErr(msg)
 end
 
 local Utils = require(plugin_path .. "xray_utils")
-local Crypto = require(plugin_path .. "xray_crypto")
+local CodeTransfer = require(plugin_path .. "xray_code_transfer")
+local RelayConfig = require(plugin_path .. "xray_relay_config")
+local SecureHTTP = require(plugin_path .. "xray_secure_http")
 
 local ok_json, json = pcall(require, "json")
 if not ok_json or not json then
     pcall(function() json = require(plugin_path .. "xray_json") end)
 end
-
-local DEFAULT_WORKER_URL = "https://xray-setup.ultimatejimmy.workers.dev"
 
 local WebSetup = {
     server = nil,
@@ -61,85 +61,6 @@ function WebSetup:isLocalServerSupported()
         return false
     end
     return true
-end
-
--- Simple HTTPS/HTTP Request Helper
-local function httpRequest(url, method, headers, request_body, timeout)
-    timeout = timeout or 10
-    local is_https = url:match("^https://") ~= nil
-    local ok_http, http_req = pcall(require, "socket.http")
-    local ok_https, https_req = false, nil
-    if is_https then
-        ok_https, https_req = pcall(require, "ssl.https")
-    end
-    local ok_ltn12, ltn12_req = pcall(require, "ltn12")
-    local ok_util, socketutil = pcall(require, "socketutil")
-
-    if not ok_http or not http_req then
-        return nil, "error_require", "socket.http module unavailable"
-    end
-    if is_https and (not ok_https or not https_req) then
-        return nil, "error_require", "ssl.https module unavailable"
-    end
-
-    if https_req then https_req.cert_verify = false end
-    if ok_util and socketutil and socketutil.set_timeout then
-        pcall(function() socketutil:set_timeout(timeout, timeout * 2) end)
-    end
-
-    local req_headers = headers or {}
-    if not req_headers["User-Agent"] and not req_headers["user-agent"] then
-        req_headers["User-Agent"] = "Mozilla/5.0 (compatible; KOReader-XRay/1.0)"
-    end
-
-    local response_body = {}
-    local sink = nil
-    if ok_util and socketutil and socketutil.table_sink then
-        sink = socketutil.table_sink(response_body)
-    elseif ok_ltn12 and ltn12_req and ltn12_req.sink and ltn12_req.sink.table then
-        sink = ltn12_req.sink.table(response_body)
-    else
-        sink = function(chunk)
-            if chunk then table.insert(response_body, chunk) end
-            return 1
-        end
-    end
-
-    local req_table = {
-        url = url,
-        method = method or "GET",
-        headers = req_headers,
-        sink = sink,
-    }
-
-    if request_body and #request_body > 0 then
-        if ok_ltn12 and ltn12_req and ltn12_req.source and ltn12_req.source.string then
-            req_table.source = ltn12_req.source.string(request_body)
-        end
-        if not req_table.headers["content-length"] then
-            req_table.headers["content-length"] = tostring(#request_body)
-        end
-    end
-
-    local ok, code, resp_headers, status
-    local pcall_ok, pcall_err = pcall(function()
-        if is_https then
-            ok, code, resp_headers, status = https_req.request(req_table)
-        else
-            ok, code, resp_headers, status = http_req.request(req_table)
-        end
-    end)
-
-    if ok_util and socketutil and socketutil.reset_timeout then
-        pcall(function() socketutil:reset_timeout() end)
-    end
-
-    if not pcall_ok then
-        return nil, "error_crash", tostring(pcall_err)
-    end
-
-    local resp_text = table.concat(response_body)
-    return ok, tonumber(code) or code, resp_text, resp_headers
 end
 
 function WebSetup:getProviderDisplayName(provider)
@@ -192,6 +113,39 @@ end
 -- 1. Cloud Relay Setup (Recommended)
 -- =========================================================================
 
+-- Saving only changes future sessions. In-flight sessions keep their origin.
+function WebSetup:showRelaySettings(ai_helper, on_saved)
+    local InputDialog = require("ui/widget/inputdialog")
+    local current = ai_helper and ai_helper.settings and ai_helper.settings[RelayConfig.SETTING]
+    local dialog
+    local function save(value)
+        local ok, message = RelayConfig.save(ai_helper, value)
+        if not ok then
+            UIManager:show(InfoMessage:new{ text = message, timeout = 5 })
+            return
+        end
+        UIManager:close(dialog)
+        UIManager:show(InfoMessage:new{ text = "Setup relay saved. New phone transfers will use " .. message, timeout = 5 })
+        if on_saved then on_saved() end
+    end
+    dialog = InputDialog:new{
+        title = "Setup relay server",
+        description = "Used for API-key setup, Claude code transfer and TypeSafe key transfer. "
+            .. "Use your trusted HTTPS hostname with no path or port. The server serves the page's code, "
+            .. "so its operator must be trusted while you enter keys or codes. Model requests are unchanged.",
+        input = type(current) == "string" and current or RelayConfig.DEFAULT_URL,
+        buttons = {
+            {{ text = "Cancel", callback = function() UIManager:close(dialog) end },
+             { text = "Save", is_enter_default = true, callback = function()
+                 save((dialog:getInputText() or ""):match("^%s*(.-)%s*$"))
+             end }},
+            {{ text = "Use upstream relay", callback = function() save(RelayConfig.DEFAULT_URL) end }},
+        },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
 function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
     local ok_run, result = pcall(function()
         self.ai_helper = ai_helper
@@ -213,21 +167,25 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
 
         self:stop()
 
-        local worker_url = DEFAULT_WORKER_URL
-        if self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.cloud_setup_worker_url then
-            worker_url = self.ai_helper.settings.cloud_setup_worker_url
+        local worker_url, config_error = RelayConfig.resolve(ai_helper and ai_helper.settings)
+        if not worker_url then
+            UIManager:show(InfoMessage:new{ text = config_error, timeout = 5 })
+            return false
         end
-        worker_url = worker_url:gsub("/+$", "")
 
-        -- 1. Generate client secret (pure Lua)
-        local secret_hex = Crypto:generateSecretHex()
+        -- The fragment key must come from the OS CSPRNG, never math.random.
+        local secret_hex = CodeTransfer:generateSecret()
+        if not secret_hex then
+            UIManager:show(InfoMessage:new{ text = "Secure randomness is unavailable. Setup was not started.", timeout = 5 })
+            return false
+        end
         self.session_secret = secret_hex
 
         -- 2. Request new session from Cloudflare Worker
-        local create_url = worker_url .. "/api/session/create"
-        local ok, code, resp_text = httpRequest(create_url, "POST", { ["Content-Type"] = "application/json" }, "{}", 6)
+        local ok, code, resp_text = SecureHTTP:requestRelay(worker_url, "/api/session/create", "POST", { ["Content-Type"] = "application/json" }, "{}", 6)
 
         if not ok or code ~= 200 or not resp_text then
+            self:stop()
             logErr("WebSetup: Failed to create session on worker (" .. tostring(code) .. "), response " .. tostring(type(resp_text) == "string" and #resp_text or 0) .. " bytes")
             local msg = "Could not reach Cloud Relay (" .. tostring(code or "Network error") .. "). Check your Wi-Fi connection."
             if self:isLocalServerSupported() then
@@ -242,7 +200,9 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
 
         local sess_data
         pcall(function() sess_data = json.decode(resp_text) end)
-        if not sess_data or not sess_data.session_id then
+        if type(sess_data) ~= "table" or type(sess_data.session_id) ~= "string"
+            or not sess_data.session_id:match("^[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]$") then
+            self:stop()
             logErr("WebSetup: Invalid response payload from worker (" .. tostring(type(resp_text) == "string" and #resp_text or 0) .. " bytes)")
             UIManager:show(InfoMessage:new{ text = "Invalid response from Cloud Relay.", timeout = 4 })
             return false
@@ -344,7 +304,7 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
         table.insert(vg_components, VerticalSpan:new{ width = 10 })
 
         -- Instructions
-        local step_instructions = "1. Scan the QR code or visit the link on your phone/PC.\n2. Paste your API key on the web page and tap Save."
+        local step_instructions = "1. Scan the QR code with your phone. The short session code alone cannot securely pair.\n2. Paste your API key on the page and tap Send. Use Show full link if needed."
         table.insert(vg_components, TextBoxWidget:new{
             text = step_instructions,
             face = Font:getFace("cfont", base_fs),
@@ -354,7 +314,22 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
 
         local vg = VerticalGroup:new(vg_components)
 
-        local action_buttons = {}
+        local action_buttons = {{
+            text = "Show full link",
+            callback = function()
+                if self.link_dialog then UIManager:close(self.link_dialog) end
+                local link_dialog
+                link_dialog = ButtonDialog:new{
+                    title = "Keep this full link private:\n\n" .. full_url,
+                    buttons = {{{ text = "Close", callback = function()
+                        UIManager:close(link_dialog)
+                        if self.link_dialog == link_dialog then self.link_dialog = nil end
+                    end }}},
+                }
+                self.link_dialog = link_dialog
+                UIManager:show(link_dialog)
+            end,
+        }}
         if self:isLocalServerSupported() then
             table.insert(action_buttons, {
                 text = (loc and loc:t("menu_setup_local")) or "Local Wi-Fi (Offline LAN)",
@@ -387,6 +362,7 @@ function WebSetup:startCloudRelay(ai_helper, loc, ui_callback)
     end)
 
     if not ok_run then
+        self:stop()
         logErr("WebSetup: Exception in startCloudRelay: " .. tostring(result))
         UIManager:show(InfoMessage:new{
             text = "Error launching Web Setup: " .. tostring(result),
@@ -408,7 +384,7 @@ function WebSetup:pollCloudRelay(worker_url, session_id, secret_hex)
         return
     end
 
-    local poll_url = string.format("%s/api/session/%s/poll", worker_url, session_id)
+    local poll_path = string.format("/api/session/%s/poll", session_id)
     self.poll_count = (self.poll_count or 0) + 1
     local current_poll = self.poll_count
     
@@ -416,7 +392,7 @@ function WebSetup:pollCloudRelay(worker_url, session_id, secret_hex)
     local function doPoll()
         if not self.is_running or self.session_id ~= session_id then return end
 
-        local ok, code, resp_text = httpRequest(poll_url, "GET", {}, nil, 4)
+        local ok, code, resp_text = SecureHTTP:requestRelay(worker_url, poll_path, "GET", {}, nil, 4)
         if not self.is_running or self.session_id ~= session_id then return end
 
         if current_poll == 1 or current_poll % 5 == 0 then
@@ -429,7 +405,7 @@ function WebSetup:pollCloudRelay(worker_url, session_id, secret_hex)
             pcall(function() data = json.decode(resp_text) end)
             if data and data.status == "ready" and data.payload then
                 logInfo("WebSetup: Found ready payload, attempting decryption...")
-                local decrypted_json, err = Crypto:decryptPayload(data.payload, secret_hex, session_id)
+                local decrypted_json, err = CodeTransfer:decrypt(data.payload, secret_hex)
                 if decrypted_json then
                     logInfo("WebSetup: Decrypted JSON successfully: " .. tostring(#decrypted_json) .. " chars")
                     local payload_obj
@@ -959,6 +935,10 @@ function WebSetup:start(ai_helper, loc, ui_callback)
 end
 
 function WebSetup:stop()
+    if self.link_dialog then
+        UIManager:close(self.link_dialog)
+        self.link_dialog = nil
+    end
     self.is_running = false
     self.session_id = nil
     self.session_secret = nil

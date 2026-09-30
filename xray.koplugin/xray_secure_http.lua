@@ -1,8 +1,10 @@
--- Verified subscription-only transport. No network or TLS module loading on require.
+-- Verified, separately scoped subscription, updater and setup-relay transport. No network or TLS module loading on require.
 -- KOReader base currently bundles LuaSec 1.3.2. Its ssl.https does NOT
 -- validate hostnames, so use LuaSocket HTTP framing over our verified socket.
 -- Sources: koreader-base/thirdparty/luasec/CMakeLists.txt and
 -- brunoos/luasec v1.3.2 src/{https.lua,x509.c}. Unknown backends fail closed.
+local module_name = ... or "xray_secure_http"
+local module_prefix = module_name:match("^(.*[/%.])") or ""
 local SecureHTTP = {}
 -- Relative to this module's source path (KOReader keeps its working directory).
 -- This path is provisioned by the release, never downloaded by authentication.
@@ -12,13 +14,9 @@ local bundled_ca = plugin_directory and plugin_directory .. "certs/ca-bundle.crt
 -- Exact subscription hosts only. Anthropic hosts pinned from Jcode commit
 -- 02777ce1bea392f03af4eda48c5292bb48946646 (auth/oauth.rs TOKEN_URL and the
 -- anthropic provider Messages endpoint). No wildcard or speculative hosts.
--- The setup relay host is the one pinned, deployed X-Ray pairing relay. It only
--- ever carries end-to-end encrypted, fragment-keyed ciphertext (never tokens or
--- bearer headers); see xray_code_transfer.lua. It is not user-configurable.
 local allowed = {
     ["auth.openai.com"] = true, ["chatgpt.com"] = true,
     ["platform.claude.com"] = true, ["api.anthropic.com"] = true,
-    ["xray-setup.ultimatejimmy.workers.dev"] = true,
     -- Optional TypeSafe Jev decision API (docs.typesafe.ai/api), exact host.
     ["api.typesafe.ai"] = true,
 }
@@ -99,6 +97,9 @@ local function perform(self, policy, url, method, headers, body, timeout)
             or value:find("[%c]") then return failure("invalid_request") end
         local lower = key:lower()
         if policy.public and (lower == "authorization" or lower == "cookie") then
+            return failure("invalid_request")
+        end
+        if policy.no_credentials and lower ~= "accept" and lower ~= "content-type" and lower ~= "user-agent" then
             return failure("invalid_request")
         end
         if lower == "host" or lower == "proxy-authorization" or lower == "connection"
@@ -227,6 +228,20 @@ end
 -- rejected, not stripped, so a caller bug fails loudly instead of leaking.
 function SecureHTTP:requestPublic(url, headers, timeout)
     return perform(self, UPDATE_POLICY, url, "GET", headers, nil, timeout)
+end
+
+-- Relay traffic is ciphertext transport, never model/OAuth authentication.
+-- The exact origin is validated for each call and is not added to AUTH_POLICY.
+function SecureHTTP:requestRelay(origin, path, method, headers, body, timeout)
+    local Config = require(module_prefix .. "xray_relay_config")
+    local validated, host = Config.normalize(origin)
+    if not validated then return failure("invalid_url") end
+    local create = path == "/api/session/create" and method == "POST" and body == "{}"
+    local poll = type(path) == "string" and path:match("^/api/session/[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]/poll$")
+        and method == "GET" and body == nil
+    if not create and not poll then return failure("invalid_request") end
+    return perform(self, { hosts = { [host] = true }, max_bytes = 16384, no_credentials = true },
+        validated .. path, method, headers, body, timeout)
 end
 
 return SecureHTTP

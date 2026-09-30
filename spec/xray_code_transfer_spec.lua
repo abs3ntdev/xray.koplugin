@@ -33,7 +33,8 @@ describe("Phone code transfer", function()
         T = Module.new({
             time = function() return clock end,
             entropy = function(n) assert.are.equal(32, n) return entropy_bytes end,
-            http = { request = function(_, url, method, headers, body, timeout)
+            http = { requestRelay = function(_, origin, path, method, headers, body, timeout)
+                local url = origin .. path
                 calls[#calls + 1] = { url = url, method = method, headers = headers, body = body, timeout = timeout }
                 if hook then hook() end
                 local r = table.remove(responses, 1) or { true, 204, "" }
@@ -54,7 +55,7 @@ describe("Phone code transfer", function()
         return s
     end
 
-    it("creates a pinned relay session with a fragment-only 64-hex secret", function()
+    it("creates a default relay session with a fragment-only 64-hex secret", function()
         local s = session()
         assert.are.equal(RELAY .. "/api/session/create", calls[1].url)
         assert.are.equal("POST", calls[1].method)
@@ -62,6 +63,28 @@ describe("Phone code transfer", function()
         assert.are.equal("AB12CD", s.id)
         assert.is_nil(calls[1].headers.Authorization)
         assert.is_nil(calls[1].body:find(KEY, 1, true))
+    end)
+
+    it("uses one custom origin for creation, QR and polling even after settings change", function()
+        T.settings = { cloud_setup_worker_url = "https://XRAY.example.com/" }
+        local s = session()
+        assert.are.equal("https://xray.example.com/api/session/create", calls[1].url)
+        assert.are.equal("https://xray.example.com/?s=AB12CD#" .. KEY, s.url)
+        T.settings.cloud_setup_worker_url = "https://other.example.com"
+        T:poll(s)
+        assert.are.equal("https://xray.example.com/api/session/AB12CD/poll", calls[2].url)
+    end)
+
+    it("accepts explicit shared settings and rejects invalid settings without network", function()
+        responses[1] = { true, 200, '{"session_id":"AB12CD"}' }
+        local s = T:start(clock + 300, { cloud_setup_worker_url = "https://own.example.com" })
+        assert.are.equal("https://own.example.com", s.relay_url)
+        local n = #calls
+        for _, bad in ipairs({ "http://own.example.com", "https://own.example.com/path", false, "" }) do
+            local result, err = T:start(clock + 300, { cloud_setup_worker_url = bad })
+            assert.is_nil(result) assert.are.equal("invalid_relay", err)
+        end
+        assert.are.equal(n, #calls)
     end)
 
     it("fails closed before network without strong entropy", function()

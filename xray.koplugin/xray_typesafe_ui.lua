@@ -1,6 +1,6 @@
 -- TypeSafe Jev (optional decision helper) settings UI.
 -- Key entry: manual paste, or the hardened phone transfer carrier
--- (xray_code_transfer: pinned relay, fragment key, one result per session).
+-- (xray_code_transfer: configured relay, fragment key, one result per session).
 -- The received text is only ever saved as the TypeSafe key. Saving a key
 -- never enables TypeSafe; the user toggles it separately. Keys are never
 -- logged or shown.
@@ -160,7 +160,7 @@ end
 function M:startPhone()
     self:cancel()
     local generation = self.generation
-    local session, _, message = self:transferService():start(os.time() + TRANSFER_LIFETIME)
+    local session, _, message = self:transferService():start(os.time() + TRANSFER_LIFETIME, self:helper().settings)
     if generation ~= self.generation then
         if session then pcall(self:transferService().cancel, self:transferService(), session) end
         return

@@ -19,7 +19,7 @@ This plugin brings Kindle-style X-Ray features to KOReader. It uses AI to track 
 ## What it does
 
 - **AI-Powered Insights**: Supports Google Gemini, OpenAI, **DeepSeek**, **Claude**, and **Custom API** providers (like OpenRouter).
-- **Phone & PC Quick Setup**: Set API keys in seconds via QR code scanning or web browser with end-to-end zero-knowledge encryption, completely eliminating on-screen e-ink typing.
+- **Phone & PC Quick Setup**: Set API keys in seconds via a full QR link with client-side encryption, avoiding on-screen e-ink typing. Use a relay operator you trust, or [host the relay on Unraid](docs/self-hosted-relay.md).
 - **Character Tracking**: View bios and roles. Now supports **Merging Duplicates** with AI-consolidated summaries.
 - **Customizable Detail**: Choose between short or long AI descriptions to fit your preference.
 - **Linked Entries**: Automatically connect related characters and locations through smart cross-referencing.
@@ -34,6 +34,8 @@ This plugin brings Kindle-style X-Ray features to KOReader. It uses AI to track 
 - **Multilingual**: Available in English, German, French, Spanish, Brazilian Portuguese, Russian, Ukrainian, Turkish, Simplified Chinese, Dutch, Hungarian, Polish, Indonesian, Arabic, Italian, Serbian, and Japanese.
 
 ## Documentation
+
+- **[Self-hosted setup relay](docs/self-hosted-relay.md)**: Release-built Docker image, direct Unraid container settings, Pangolin HTTPS routing and the plugin relay setting.
 
 For full setup instructions and a deep dive into features, check out the **[GitHub Wiki](https://github.com/ultimatejimmy/koreader-xray-plugin/wiki)**.
 

@@ -1,8 +1,8 @@
 /**
  * KOReader X-Ray Plugin — Cloudflare Worker Setup Relay
  * 
- * Ephemeral zero-knowledge relay for setting API keys from smartphone / PC.
- * All payloads are encrypted in the browser using Web Crypto (AES-256-GCM) with
+ * Ephemeral encrypted pairing relay for setting API keys from smartphone / PC.
+ * Payloads are encrypted in the browser using the existing HMAC-SHA256 stream format with
  * a client-generated secret from the URL hash (#secret), so plaintext API keys
  * are never visible to the relay or stored online.
  */
@@ -182,7 +182,7 @@ export default {
   },
 };
 
-const HTML_PAGE = `<!DOCTYPE html>
+export const HTML_PAGE = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -528,22 +528,22 @@ const HTML_PAGE = `<!DOCTYPE html>
     <span class="badge-device">E-Reader Setup</span>
   </div>
 
-  <!-- Zero-Knowledge Privacy Notice -->
+  <!-- Encryption and operator trust notice -->
   <div class="security-box">
     <div class="security-header">
-      <span>🔒 100% Zero-Knowledge & Private</span>
+      <span>🔒 Encrypted phone-to-reader setup</span>
     </div>
     <div class="security-text">
-      Your API key is encrypted <strong>directly in your browser (AES-256-GCM)</strong> before sending. It is delivered directly to your e-reader and <strong>never stored, logged, or visible online</strong>.
+      Your data is encrypted <strong>in your browser</strong> with the secret in the full QR link. The relay holds encrypted data for up to 10 minutes. Trust the operator of this page: they serve the code that handles what you type. The six-character pairing code alone is not enough; scan the QR link from your reader.
     </div>
   </div>
 
   <!-- STEP 1: Enter Pairing Code Screen (Shown if no code in URL) -->
   <div id="viewStep1" class="view-step">
     <div class="step1-card">
-      <div class="step1-title">Enter Pairing Code</div>
+      <div class="step1-title">Open the Full QR Link</div>
       <p class="step1-desc">
-        On your e-reader, go to <strong>API Keys & Providers → Set Key from Phone / PC → Cloud Relay</strong> to view your 6-character code.
+        On your e-reader, go to <strong>API Keys & Providers → Set Key from Phone / PC → Cloud Relay</strong> and scan the QR link. Its private fragment is required; the six-character code alone cannot pair securely.
       </p>
 
       <div class="code-input-wrap">
@@ -698,6 +698,14 @@ window.addEventListener('DOMContentLoaded', function() {
   const paramCode = (params.get('s') || '').trim().toUpperCase();
   secretKeyHex = (window.location.hash || '').replace(/^#/, '').trim();
 
+  if (!hasValidSecret()) {
+    showStep(1);
+    document.getElementById('pairingCodeInput').disabled = true;
+    document.getElementById('btnContinue').disabled = true;
+    showMsg('Scan the full QR link from your reader before entering any key or code. The pairing code alone is not enough.', 'error');
+    return;
+  }
+
   // Allow pressing Enter in the Step 1 code box
   const codeInput = document.getElementById('pairingCodeInput');
   if (codeInput) {
@@ -708,7 +716,7 @@ window.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  if (paramCode && paramCode.length >= 4) {
+  if (/^[A-Z0-9]{6}$/.test(paramCode)) {
     activeSessionId = paramCode;
     showStep(2);
   } else {
@@ -716,7 +724,12 @@ window.addEventListener('DOMContentLoaded', function() {
   }
 });
 
+function hasValidSecret() {
+  return /^[0-9a-fA-F]{64}$/.test(secretKeyHex);
+}
+
 function showStep(stepNum) {
+  if (stepNum === 2 && !hasValidSecret()) return;
   document.getElementById('viewStep1').classList.remove('active');
   document.getElementById('viewStep2').classList.remove('active');
   hideMsg();
@@ -736,9 +749,13 @@ function showStep(stepNum) {
 }
 
 function proceedToStep2() {
+  if (!hasValidSecret()) {
+    showMsg('Scan the full QR link from your reader first.', 'error');
+    return;
+  }
   const input = document.getElementById('pairingCodeInput');
   const code = (input ? input.value : '').trim().toUpperCase();
-  if (!code || code.length < 4) {
+  if (!/^[A-Z0-9]{6}$/.test(code)) {
     showMsg('Please enter the 6-character code from your e-reader.', 'error');
     if (input) input.focus();
     return;
@@ -856,19 +873,19 @@ function bufferToBase64(buffer) {
   return window.btoa(binary);
 }
 
-// Web Crypto AES-256-GCM Encryption
+// Existing HMAC-SHA256 stream + tag format, preserved for KOReader compatibility
 async function encryptPayload(dataObj, hexSecret) {
   const plaintext = JSON.stringify(dataObj);
   const enc = new TextEncoder();
   const rawData = enc.encode(plaintext);
-
-  let keyBytes;
-  if (hexSecret && hexSecret.length >= 32) {
-    keyBytes = hexToBytes(hexSecret.slice(0, 64).padEnd(64, '0'));
-  } else {
-    const hash = await crypto.subtle.digest('SHA-256', enc.encode(activeSessionId || 'XRAY-DEFAULT'));
-    keyBytes = new Uint8Array(hash);
+  if (rawData.length > 4096) {
+    throw new Error('Payload is too large for the reader (4096 bytes maximum).');
   }
+
+  if (typeof hexSecret !== 'string' || !/^[0-9a-fA-F]{64}$/.test(hexSecret)) {
+    throw new Error('Missing or invalid secret. Scan the full QR link from your reader; the pairing code alone is not enough.');
+  }
+  const keyBytes = hexToBytes(hexSecret);
 
   const hmacKey = await crypto.subtle.importKey(
     'raw',
@@ -921,6 +938,10 @@ async function encryptPayload(dataObj, hexSecret) {
 }
 
 async function submitKey() {
+  if (!hasValidSecret()) {
+    showMsg('Scan the full QR link from your reader first.', 'error');
+    return;
+  }
   if (!activeSessionId) {
     showMsg('Missing pairing session. Please enter your code.', 'error');
     showStep(1);

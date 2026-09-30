@@ -5331,6 +5331,15 @@ function M:getAPIKeysMenu()
         end,
     })
 
+    table.insert(menu_items, {
+        text = "Setup relay server...",
+        keep_menu_open = true,
+        callback = function()
+            local WebSetup = require(plugin_path .. "xray_websetup")
+            WebSetup:showRelaySettings(self.ai_helper, function() self:refreshAPIKeysMenu() end)
+        end,
+    })
+
     -- Option 2: Config & Text File Guide
     table.insert(menu_items, {
         text = self.loc:t("welcome_file_guide_title") or "Config & Text File Setup...",

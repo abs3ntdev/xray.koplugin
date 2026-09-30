@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "release": "semantic-release",
-    "test:release": "node --test tools/release-policy.test.mjs"
+    "test:release": "node --test tools/release-policy.test.mjs",
+    "test:relay": "node --test relay/relay.test.mjs tools/relay-release.test.mjs"
   },
   "engines": {
     "node": ">=24.10.0"
