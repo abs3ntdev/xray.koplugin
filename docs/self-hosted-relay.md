@@ -90,7 +90,9 @@ explains ports, variables and container updates.
    external route; a healthy Docker container alone does not prove public TLS
    and routing work.
 
-The relay deliberately rejects cross-origin browser requests and credential
+The relay deliberately rejects cross-origin browser requests and authorization
+headers. Public page and health GETs ignore incidental browser cookies; the
+phone omits cookies when submitting, and API routes still reject credential
 headers. Interactive gateway authentication is incompatible with these
 credential-free machine endpoints. Limit abuse with the proxy's request limits
 and network controls that work for both your reader and phone. No secret bypass
@@ -156,9 +158,12 @@ in [Claude setup](anthropic-subscription.md).
 - **Reader says relay unavailable, or the phone gets HTML instead of JSON:**
   check public DNS/TLS, the Pangolin target and interactive-auth settings. The
   reader rejects redirects rather than following them with session traffic.
-- **Browser returns 400 despite public routing:** use a dedicated hostname with no
-  parent-domain cookies, or a clean browser profile. The relay rejects Cookie
-  headers as well as authorization headers.
+- **Browser reports that credentials are not accepted:** update the relay image
+  and reload the page. Current page and health GETs ignore ordinary browser
+  cookies, and the page sends API requests without browser credentials. If the
+  error persists, check that the proxy is not adding authorization headers or
+  requiring access cookies; API routes still reject credential headers. A clean
+  browser profile can work around incidental cookies on an older relay image.
 - **TLS failure on reader:** check its clock and trusted CA bundle. Never disable
   certificate verification or use a self-signed public endpoint as a workaround.
 - **Missing secret in browser:** scan a new full QR link. Do not paste the full

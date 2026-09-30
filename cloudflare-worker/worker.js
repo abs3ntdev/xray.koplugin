@@ -977,6 +977,7 @@ async function submitKey() {
 
     const res = await fetch('/api/session/' + encodeURIComponent(activeSessionId) + '/submit', {
       method: 'POST',
+      credentials: 'omit',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ encrypted_payload: encryptedPayload })
     });

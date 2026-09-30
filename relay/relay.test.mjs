@@ -113,6 +113,81 @@ test('cross-origin requests and credential headers fail closed; no redirects', a
   assert.equal((await app.fetch(request('/https://evil.example'))).status, 404);
 });
 
+test('public page and health GETs ignore incidental cookies without accepting authorization', async () => {
+  const app = createRelay({ origin });
+  const cookie = 'parent_session=dummy-cookie-only';
+  for (const path of ['/', '/?s=ABC234', '/index.html', '/healthz']) {
+    const res = await app.fetch(request(path, 'GET', undefined, { Cookie: cookie }));
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get('set-cookie'), null);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.doesNotMatch(await res.text(), /dummy-cookie-only/);
+    for (const header of ['Authorization', 'Proxy-Authorization', 'X-Api-Key']) {
+      assert.equal((await app.fetch(request(path, 'GET', undefined,
+        { Cookie: cookie, [header]: 'dummy-only' }))).status, 400, path + ' ' + header);
+    }
+    assert.equal((await app.fetch(request(path, 'GET', undefined,
+      { Cookie: cookie, Origin: 'https://evil.example' }))).status, 403);
+  }
+  for (const path of ['/', '/index.html', '/healthz']) {
+    assert.equal((await app.fetch(request(path, 'POST', {}, { Cookie: cookie }))).status, 400);
+  }
+});
+
+test('API routes still reject cookies and other credential headers before using session state', async () => {
+  const app = createRelay({ origin });
+  const session = await create(app);
+  const path = '/api/session/' + session.session_id;
+  for (const header of ['Cookie', 'Authorization', 'Proxy-Authorization', 'X-Api-Key']) {
+    const headers = { [header]: 'dummy-only' };
+    for (const [route, method, body] of [
+      ['/api/session/create', 'POST', {}],
+      [path + '/poll', 'GET', undefined],
+      [path + '/submit', 'POST', { encrypted_payload: encrypted }],
+      [path + '/submit', 'OPTIONS', undefined],
+    ]) {
+      assert.equal((await app.fetch(request(route, method, body, headers))).status, 400, route + ' ' + header);
+    }
+  }
+  assert.equal((await app.fetch(request(path + '/poll'))).status, 204);
+});
+
+test('served portal explicitly omits browser credentials when submitting encrypted data', async () => {
+  const app = createRelay({ origin });
+  const session = await create(app);
+  const page = await app.fetch(request('/?s=' + session.session_id));
+  const script = (await page.text()).match(/<script>([\s\S]*?)<\/script>/)[1];
+  const nodes = new Map(), listeners = {}, calls = [];
+  const element = id => {
+    if (!nodes.has(id)) nodes.set(id, { value: '', disabled: false, innerHTML: '', style: {},
+      classList: { add() {}, remove() {} }, addEventListener() {}, focus() {} });
+    return nodes.get(id);
+  };
+  const context = vm.createContext({ TextEncoder, Uint8Array, DataView, URLSearchParams, crypto: webcrypto,
+    setTimeout() {}, document: { getElementById: element, querySelectorAll: () => [] },
+    window: { location: { search: '?s=' + session.session_id, hash: '#' + 'ab'.repeat(32) },
+      addEventListener: (event, fn) => { listeners[event] = fn; },
+      btoa: value => Buffer.from(value, 'binary').toString('base64') },
+    fetch: async (path, options) => {
+      calls.push({ path, options });
+      return app.fetch(new Request(origin + path, options));
+    },
+  });
+  vm.runInContext(script, context);
+  listeners.DOMContentLoaded();
+  element('keyInput').value = 'dummy-key-only';
+  await vm.runInContext('submitKey()', context);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/api/session/' + session.session_id + '/submit');
+  assert.equal(calls[0].options.credentials, 'omit');
+  assert.deepEqual(Object.keys(calls[0].options.headers), ['Content-Type']);
+  assert.doesNotMatch(calls[0].options.body, /dummy-key-only/);
+  const ready = await (await app.fetch(request('/api/session/' + session.session_id + '/poll'))).json();
+  assert.equal(ready.status, 'ready');
+  assert.match(ready.payload, /^HMAC:/);
+  assert.match(element('msgBox').textContent, /encrypted and sent successfully/);
+});
+
 test('portal retains QR URL flow and encrypts dummy data compatibly, without secret fallbacks', async () => {
   const app = createRelay({ origin });
   const page = await app.fetch(request('/?s=ABC234'));

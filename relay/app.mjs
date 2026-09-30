@@ -68,7 +68,11 @@ export function createRelay({ origin, now = Date.now, generateId = () =>
       if (url.origin !== origin) return error('Invalid relay origin', 400);
       const browserOrigin = request.headers.get('origin');
       if (browserOrigin && browserOrigin !== origin) return error('Cross-origin request rejected', 403);
-      if (request.headers.has('authorization') || request.headers.has('cookie')
+      // Browsers attach ambient cookies to navigation, including parent-domain
+      // cookies. Ignore them only on public GETs; API traffic stays credential-free.
+      const publicGet = request.method === 'GET'
+        && ['/', '/index.html', '/healthz'].includes(url.pathname);
+      if (request.headers.has('authorization') || (request.headers.has('cookie') && !publicGet)
           || request.headers.has('proxy-authorization') || request.headers.has('x-api-key')) return error('Credentials are not accepted by the relay', 400);
       if (url.pathname === '/healthz' && request.method === 'GET') return json({ status: 'ok' });
       const time = now();
