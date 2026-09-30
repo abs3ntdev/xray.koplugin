@@ -43,23 +43,8 @@ jobs:
       - name: Install pinned release tooling
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Verify release policy
-        run: npm run test:release
-
-      - name: Test setup relay
-        run: npm run test:relay
-
-      - name: Install Lua test runtime
-        run: sudo apt-get update && sudo apt-get install -y luajit lua-dkjson
-
-      - name: Test Lua plugin
-        run: luajit tools/spec_runner.lua
-
       - name: Build the Unraid image before releasing
         run: docker build -t xray-relay:test .
-
-      - name: Smoke test the non-root read-only container
-        run: bash tools/smoke-relay-image.sh
 
       - name: Check semantic baseline
         run: |

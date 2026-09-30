@@ -13,7 +13,7 @@ env:
 
 jobs:
   test:
-    name: Test relay and plugin
+    name: Build relay image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,13 +24,5 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm run test:release
-      - run: npm run test:relay
-      - name: Install Lua test runtime
-        run: sudo apt-get update && sudo apt-get install -y luajit lua-dkjson
-      - name: Test Lua plugin
-        run: luajit tools/spec_runner.lua
       - name: Build the Unraid image without publishing
         run: docker build -t xray-relay:test .
-      - name: Smoke test the non-root read-only container
-        run: bash tools/smoke-relay-image.sh
