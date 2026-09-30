@@ -29,6 +29,9 @@ jobs:
       - name: Install Lua test runtime
         run: sudo apt-get update && sudo apt-get install -y luajit lua-dkjson
       - name: Test Lua plugin
+        timeout-minutes: 5
+        env:
+          SPEC_VERBOSE: 1
         run: luajit tools/spec_runner.lua
       - name: Build the Unraid image without publishing
         run: docker build -t xray-relay:test .

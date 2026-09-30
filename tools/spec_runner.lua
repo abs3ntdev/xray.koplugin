@@ -1,3 +1,6 @@
+-- Keep CI progress visible even when stdout is redirected.
+io.stdout:setvbuf("no")
+
 -- Capture the standard assert before it is replaced below.
 local lua_assert = assert
 local squashfs_root = os.getenv("SQUASHFS_ROOT") or "/home/jimmy/squashfs-root"
@@ -59,6 +62,7 @@ end
 _G.it = function(name, fn)
     local full_name = context_name(name)
     if filter and not full_name:find(filter, 1, true) then return end
+    if os.getenv("SPEC_VERBOSE") then print("[RUN ] " .. full_name) end
 
     local err
     for _, c in ipairs(contexts) do
