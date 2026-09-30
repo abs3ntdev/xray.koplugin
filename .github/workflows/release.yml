@@ -7,85 +7,51 @@ on:
 permissions:
   contents: write
 
-# Do not use a shared concurrency group: GitHub drops older pending runs,
-# even with cancel-in-progress: false. Every push must publish its own release.
+# Serialize version allocation without replacing older pending runs.
+# GitHub currently supports up to 100 pending runs with queue: max.
+concurrency:
+  group: release-main
+  queue: max
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
-    name: Publish Main Release
+    name: Publish Semantic Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout pushed commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install pinned release tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify release policy
+        run: npm run test:release
+
+      - name: Check semantic baseline
+        run: |
+          # Refuse semantic-release's default 1.0.0 if bootstrap was missed.
+          test "$(git rev-parse 'v26.9.29^{commit}')" = 9fd6efb6e78ec32230694bc4d4759f76073ee130
 
       - name: Package committed plugin
         env:
           PUSH_SHA: ${{ github.sha }}
         run: python3 tools/package_release.py "$PUSH_SHA" xray.koplugin.zip
 
-      - name: Publish release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const { owner, repo } = context.repo;
-            const sha = context.sha;
-            // run_id is unique for each push and unchanged when that run is retried.
-            const tag = `main-${context.runId}-${sha}`;
-            const assetName = 'xray.koplugin.zip';
-            const data = fs.readFileSync(assetName);
-            const digest = `sha256:${require('crypto').createHash('sha256').update(data).digest('hex')}`;
-            const optional = async (request) => {
-              try { return await request(); }
-              catch (error) { if (error.status !== 404) throw error; }
-            };
-
-            const ref = await optional(() => github.rest.git.getRef({
-              owner, repo, ref: `tags/${tag}`,
-            }));
-            if (ref) {
-              if (ref.data.object.type !== 'commit' || ref.data.object.sha !== sha) {
-                throw new Error(`Refusing to reuse tag ${tag} pointing at another commit`);
-              }
-            } else {
-              await github.rest.git.createRef({ owner, repo, ref: `refs/tags/${tag}`, sha });
-            }
-
-            let release = await optional(() => github.rest.repos.getReleaseByTag({ owner, repo, tag }));
-            if (!release) {
-              release = await github.rest.repos.createRelease({
-                owner, repo, tag_name: tag, target_commitish: sha,
-                name: `Main ${context.runNumber}`,
-                body: `Install xray.koplugin.zip in KOReader's plugins directory.\n\nSource commit: ${sha}`,
-                draft: false, prerelease: false, make_latest: 'false',
-              });
-            }
-            const release_id = release.data.id;
-            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
-              owner, repo, release_id, per_page: 100,
-            });
-            const asset = assets.find(item => item.name === assetName);
-            if (asset) {
-              // Never replace an already published asset with different bytes.
-              if (asset.state !== 'uploaded' || asset.size !== data.length || asset.digest !== digest) {
-                throw new Error(`Existing ${assetName} is incomplete or differs from this commit`);
-              }
-            } else {
-              await github.rest.repos.uploadReleaseAsset({
-                owner, repo, release_id, name: assetName, data,
-                headers: { 'content-type': 'application/zip' },
-              });
-            }
-
-            // Older pushes and reruns may publish, but must not displace the main tip.
-            const main = await github.rest.git.getRef({ owner, repo, ref: 'heads/main' });
-            await github.rest.repos.updateRelease({
-              owner, repo, release_id, draft: false, prerelease: false,
-              make_latest: main.data.object.sha === sha ? 'true' : 'false',
-            });
-            core.notice(`Published ${tag} at ${sha}: ${release.data.html_url}`);
+      - name: Publish semantic release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release

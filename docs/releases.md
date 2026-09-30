@@ -1,43 +1,96 @@
-# Main-branch releases
+# Main-branch semantic releases
 
-Every push to `main` runs the existing **Release** workflow. Tag pushes and
-manual dispatch no longer run a second release path. There are no path filters
-or shared concurrency groups, so documentation-only pushes and concurrent pushes
-also get their own release.
+Every push to `main` triggers the existing **Release** workflow, including
+workflow/documentation-only changes. It uses pinned npm `semantic-release` and
+the official commit-analyzer, release-notes-generator and GitHub plugins.
+There are no release commits, package publishing, version-file rewrites, PR
+triggers or tag-trigger loops. The workflow checks out the exact pushed SHA.
 
-Each run publishes a normal, non-draft, non-prerelease GitHub release tagged
-`main-<run_id>-<full pushed SHA>`. Retrying a run reuses that tag and release.
-The tag is created at the exact pushed commit, never a moving branch reference.
-Existing tags or assets with different contents cause a failure rather than
-being overwritten. An already uploaded identical ZIP is reused on reruns.
-A release is initially created without becoming latest. After uploading its ZIP,
-only a run whose SHA still equals the live `main` tip requests latest status.
-Older runs still publish their releases without changing the latest selection.
+## Version policy
 
-The release asset is **xray.koplugin.zip**, not GitHub's whole-repository source
-archive. Extract it into KOReader's `plugins/` directory to produce
-`plugins/xray.koplugin/main.lua` and `plugins/xray.koplugin/_meta.lua`.
+Tags and release titles are `vMAJOR.MINOR.PATCH`. Commits since the last semantic
+tag determine the highest applicable bump:
+
+- `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer or `type!:` / `type(scope)!:`: major.
+- `feat:` / `feat(scope):`: minor.
+- Anything else, including fixes, docs, CI and nonconventional messages: patch.
+
+The catchall is explicit rather than semantic-release's usual no-release
+behavior for documentation changes. Normal semantic-release exclusions still
+apply, including release-skip markers, empty messages and fully reverted commit
+pairs. A successful rerun with no new commits does not allocate another version.
+An empty-tree commit with a normal message does count as a new commit.
+
+## One-time baseline
+
+Before enabling this configuration on `main`, a maintainer creates the baseline
+**tag only** `v26.9.29` at `9fd6efb6e78ec32230694bc4d4759f76073ee130`.
+That commit already has the published `Main 1` release and verified plugin ZIP.
+The existing nonsemantic release and all historical tags remain untouched.
+
+```sh
+git tag v26.9.29 9fd6efb6e78ec32230694bc4d4759f76073ee130
+git push origin refs/tags/v26.9.29
+```
+
+This preserves the `26.x` version line: the committed plugin metadata currently
+says `26.9.29-beta`, while inherited stable tags such as `26.9.17` have no `v`
+prefix and are not recognized by the new tag format. The workflow explicitly
+checks the baseline tag and SHA, refusing to fall back silently to `1.0.0`.
+The first CI-only migration commit after the baseline produces `v26.9.30`.
+
+Release tags are distribution versions. `_meta.lua` remains unchanged legacy
+in-app metadata, so archive bytes still match the pushed source commit exactly.
+No generated commit can retrigger another release.
+
+## Concurrency and reruns
+
+The workflow uses GitHub's `queue: max` concurrency mode, with cancellation
+disabled, to serialize version allocation. GitHub allows up to 100 pending runs
+and cancels additional runs if the queue is full. Queue order follows when runs
+begin waiting, not necessarily push order.
+
+**There is not a strict one-release-per-push guarantee for overlapping pushes.**
+Standard semantic-release intentionally skips a checkout that is behind remote
+`main`. Rapid pushes can therefore be combined into the next release rather
+than publishing each older SHA. We keep that safety guard and never substitute
+a newer commit's files under an older push event. Ordinary sequential pushes
+produce releases, and successful reruns are no-ops. The normal stable `main`
+release becomes GitHub's latest release through the official GitHub plugin.
+
+If publishing fails after a tag was pushed, a rerun does not automatically
+repair an incomplete GitHub release: semantic-release sees the existing tag.
+Inspect the failed run, tag SHA and release assets before maintainer recovery.
+Do not delete/repoint published tags or force-push to recover.
+
+## Installable asset and permissions
+
+The published, non-draft, non-prerelease asset is **xray.koplugin.zip**, not
+GitHub's whole-repository source archive. Extract it into KOReader's `plugins/`
+directory to obtain `plugins/xray.koplugin/main.lua` and `_meta.lua`.
+The GitHub plugin stages the upload as a draft, then publishes after upload.
 
 `tools/package_release.py` packages only committed plugin source modules,
 public certificates/notices, SVG assets, translations and prompts under the
-single `xray.koplugin/` root. It never reads working-tree files for the payload.
-Hidden files, runtime directories and non-source types such as JSON backups,
-databases, logs, private keys and Python caches are excluded by pathname.
-The committed `xray.koplugin/xray_config.lua` is the public blank-key template
-and remains included. Do not commit personalized versions of that template.
-New asset directories or types must be added explicitly to the packager.
-
-To reproduce a release locally with Python 3.11 or newer:
+single `xray.koplugin/` root. Hidden files, runtime directories and non-source
+types such as JSON backups, databases, logs, private keys and Python caches are
+excluded by pathname before blob reads. The public blank-key
+`xray.koplugin/xray_config.lua` template stays included. Do not commit a
+personalized template. New asset types/directories need explicit packaging support.
 
 ```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run test:release
 python3 tools/package_release.py "$(git rev-parse HEAD)" xray.koplugin.zip
 ```
 
-Packaging validates required Lua entrypoints, ZIP integrity, paths and bytes
-against the Git commit. Fixed ZIP metadata and stored entries make reruns
-byte-identical. Only `contents: write` is granted to the workflow's automatic
-`GITHUB_TOKEN`. No personal token or repository secret needs configuring.
+Node 24.10+ and Python 3.11+ are required. Packaging verifies entrypoints, ZIP
+integrity, paths and bytes against Git. Fixed ZIP metadata and stored entries
+make identical-source reruns byte-identical. Only `contents: write` is granted
+to `GITHUB_TOKEN`, only for the main-push workflow. GitHub issue creation,
+comments, issue closure, labels and release references on PRs are disabled.
+No personal token is needed.
 
 This does not change the fork's in-app updater, its `openai-subscription` branch,
-plugin metadata version, device settings or account state. `tools/release.py`
-is an older manual version/tag helper and is not needed for these releases.
+device settings or account state. `tools/release.py` is an older manual helper,
+not part of semantic-release automation.
