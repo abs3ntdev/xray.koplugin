@@ -811,6 +811,8 @@ function M:showLanguageSelection()
         ar = "العربية",
         it = "Italiano",
         sr = "Српски",
+        sk = "Slovenčina",
+        cs = "Čeština",
     }
     
     local langs = self.loc and self.loc.available_languages or { "en", "de", "fr", "ru", "zh_CN", "tr", "pt_br", "es", "uk", "hu" }
@@ -843,7 +845,7 @@ function M:resolveLanguage(code)
             supported[c] = 1
         end
     else
-        supported = { en=1, de=1, fr=1, ru=1, zh_CN=1, ja=1, tr=1, pt_br=1, es=1, uk=1, hu=1, nl=1, pl=1, id=1, ar=1, sr=1 }
+        supported = { en=1, de=1, fr=1, ru=1, zh_CN=1, ja=1, tr=1, pt_br=1, es=1, uk=1, hu=1, nl=1, pl=1, id=1, ar=1, sr=1, sk=1, cs=1 }
     end
     
     if code == "auto" or not code then
@@ -868,7 +870,9 @@ function M:resolveLanguage(code)
             local book_lang = props.language
             if book_lang then
                 local lang = book_lang:sub(1, 2):lower()
-                if book_lang:lower():find("zh") then lang = "zh_CN"
+                local iso_lang = utils:languageFromIso639_2(book_lang)
+                if iso_lang then lang = iso_lang
+                elseif book_lang:lower():find("zh") then lang = "zh_CN"
                 elseif book_lang:lower():find("pt") then lang = "pt_br"
                 elseif book_lang:lower():find("ja") or book_lang:lower():find("jp") then lang = "ja" end
                 if supported[lang] then return lang end
@@ -1221,7 +1225,9 @@ function M:checkBookLanguageMatch()
     if not book_lang or book_lang == "" then return end
     
     local lang = book_lang:sub(1, 2):lower()
-    if book_lang:find("zh") then lang = "zh_CN"
+    local iso_lang = utils:languageFromIso639_2(book_lang)
+    if iso_lang then lang = iso_lang
+    elseif book_lang:find("zh") then lang = "zh_CN"
     elseif book_lang:find("pt") then lang = "pt_br"
     elseif book_lang:find("ja") or book_lang:find("jp") then lang = "ja" end
     
@@ -1243,6 +1249,8 @@ function M:checkBookLanguageMatch()
         ar = "العربية",
         it = "Italiano",
         sr = "Српски",
+        sk = "Slovenčina",
+        cs = "Čeština",
     }
     
     local supported = {}

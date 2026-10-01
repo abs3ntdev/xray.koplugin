@@ -227,6 +227,59 @@ describe("xray_lookupmanager", function()
         end)
     end)
 
+    describe("Slovak declension fallback", function()
+        local saved_ai
+        before_each(function()
+            saved_ai = plugin.ai_helper
+            plugin.characters = {
+                { name = "Peter Novák", aliases = {"Peter"} },
+                { name = "Janko Hraško" },
+                { name = "Jana" },
+            }
+            plugin.historical_figures = {}
+            plugin.locations = { { name = "Bratislava" } }
+            plugin.terms = {}
+        end)
+        after_each(function()
+            plugin.ai_helper = saved_ai
+        end)
+
+        it("finds declined names and places when the language is Slovak", function()
+            plugin.ai_helper = { current_language = "sk" }
+            local r1 = lm:lookupAll("Petrovi")
+            assert.are.equal(1, #r1)
+            assert.are.equal("Peter Novák", r1[1].item.name)
+            assert.are.equal(35, r1[1].score)
+
+            local r2 = lm:lookupAll("Janka")
+            assert.are.equal(1, #r2)
+            assert.are.equal("Janko Hraško", r2[1].item.name)
+
+            local r3 = lm:lookupAll("Bratislave")
+            assert.are.equal(1, #r3)
+            assert.are.equal("Bratislava", r3[1].item.name)
+            assert.are.equal("location", r3[1].item_type)
+
+            local r4 = lm:lookupAll("Janou")
+            assert.are.equal(1, #r4)
+            assert.are.equal("Jana", r4[1].item.name)
+        end)
+
+        it("lists an item once even if it appears in two categories", function()
+            plugin.ai_helper = { current_language = "sk" }
+            plugin.historical_figures = { plugin.characters[1] }
+            local r = lm:lookupAll("Petrovi")
+            assert.are.equal(1, #r)
+        end)
+
+        it("keeps exact matching for other languages", function()
+            plugin.ai_helper = { current_language = "en" }
+            assert.are.equal(0, #lm:lookupAll("Petrovi"))
+            assert.are.equal(0, #lm:lookupAll("Bratislave"))
+            assert.are.equal(0, #lm:lookupAll("Janou"))
+        end)
+    end)
+
     describe("word boundary and false positive prevention (Issue #140)", function()
         before_each(function()
             plugin.characters = {

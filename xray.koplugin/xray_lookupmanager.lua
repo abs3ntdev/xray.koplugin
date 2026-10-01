@@ -274,6 +274,51 @@ function LookupManager:lookupAll(text)
         end
     end
 
+    -- Declension fallback (Slovak/Czech): "Petra" or "Bratislave" should still find
+    -- "Peter" or "Bratislava". Only used when nothing else matched.
+    if #final_results == 0 and utils:usesInflection(self.plugin) then
+        local query_words = {}
+        for w in query:gmatch("%S+") do table.insert(query_words, w) end
+
+        local function itemWords(item)
+            local words = {}
+            for w in self:getNormName(item):gmatch("%S+") do table.insert(words, w) end
+            for _, anorm in ipairs(self:getNormAliases(item) or {}) do
+                for w in anorm:gmatch("%S+") do table.insert(words, w) end
+            end
+            return words
+        end
+
+        local fallback_seen = {}
+        for _, cat in ipairs(categories) do
+            if cat.list then
+                for _, item in ipairs(cat.list) do
+                    if item and item.name and not fallback_seen[item] and self:getNormName(item) ~= "" then
+                        local words = itemWords(item)
+                        local all_matched = #query_words > 0
+                        for _, qw in ipairs(query_words) do
+                            local found = false
+                            for _, iw in ipairs(words) do
+                                if utils:isInflectedForm(iw, qw) then
+                                    found = true
+                                    break
+                                end
+                            end
+                            if not found then
+                                all_matched = false
+                                break
+                            end
+                        end
+                        if all_matched then
+                            fallback_seen[item] = true
+                            table.insert(final_results, { item = item, item_type = cat.type, score = 35 })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     if #final_results > 0 then
         table.sort(final_results, function(a, b) return a.score > b.score end)
 

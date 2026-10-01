@@ -173,8 +173,12 @@ function M:utf8Lower(str)
     res = res:gsub("\196\142", "\196\143")   -- Ď -> ď (Czech/Slovak)
     res = res:gsub("\197\164", "\197\165")   -- Ť -> ť (Czech/Slovak)
     res = res:gsub("\197\135", "\197\136")   -- Ň -> ň (Czech/Slovak)
+    res = res:gsub("\196\189", "\196\190")   -- Ľ -> ľ (Slovak)
+    res = res:gsub("\196\185", "\196\186")   -- Ĺ -> ĺ (Slovak)
+    res = res:gsub("\197\148", "\197\149")   -- Ŕ -> ŕ (Slovak)
     res = res:gsub("\197\152", "\197\153")   -- Ř -> ř (Czech)
     res = res:gsub("\197\174", "\197\175")   -- Ů -> ů (Czech)
+    res = res:gsub("\196\154", "\196\155")   -- Ě -> ě (Czech)
     res = res:gsub("\196\130", "\196\131")   -- Ă -> ă (Romanian)
     res = res:gsub("\197\158", "\197\159")   -- Ş -> ş (Romanian/Turkish)
     res = res:gsub("\197\162", "\197\163")   -- Ţ -> ţ (Romanian)
@@ -416,6 +420,118 @@ function M:getLocalIP()
     return sock_ip or "127.0.0.1"
 end
 
+-- Declension support for languages that inflect names by suffix (Slovak, Czech):
+-- "Peter" appears in text as "Petra"/"Petrovi", "Bratislava" as "Bratislave".
+local INFLECTED_LANGS = { sk = true, cs = true }
+
+local INFLECTION_VOWELS = {
+    ["a"] = true, ["e"] = true, ["i"] = true, ["o"] = true, ["u"] = true, ["y"] = true,
+    ["á"] = true, ["é"] = true, ["í"] = true, ["ó"] = true, ["ú"] = true, ["ý"] = true,
+    ["ä"] = true, ["ô"] = true, ["ě"] = true, ["ů"] = true,
+}
+
+-- Maximum number of bytes a declension suffix may add to a stem ("ovcov", "ovou", "ách").
+M.INFLECTION_MAX_SUFFIX = 5
+-- 3-letter stems ("jan" of "jana") only take short endings ("jany", "janou"), so that
+-- e.g. "január" is not matched as a form of "Jana".
+local SHORT_STEM_MAX_SUFFIX = 3
+
+-- ISO 639-2 (3-letter) codes used in EPUB metadata, mapped to X-Ray language codes.
+local ISO639_2 = {
+    eng = "en", deu = "de", ger = "de", fra = "fr", fre = "fr", rus = "ru",
+    zho = "zh_CN", chi = "zh_CN", jpn = "ja", tur = "tr", por = "pt_br", spa = "es",
+    ukr = "uk", hun = "hu", nld = "nl", dut = "nl", pol = "pl", ind = "id",
+    ara = "ar", ita = "it", srp = "sr", slk = "sk", slo = "sk", ces = "cs", cze = "cs",
+}
+
+-- Maps a 3-letter language tag ("slk", "ces-CZ") to the X-Ray language code, or nil.
+function M:languageFromIso639_2(lang)
+    if type(lang) ~= "string" then return nil end
+    local code = lang:lower():match("^(%a%a%a)$") or lang:lower():match("^(%a%a%a)[-_]")
+    return code and ISO639_2[code] or nil
+end
+
+local function normalizeLangCode(lang)
+    if type(lang) ~= "string" or lang == "" then return nil end
+    local l = lang:lower()
+    local iso = M:languageFromIso639_2(l)
+    if iso then return iso end
+    if l:find("^slovak") then return "sk" end
+    if l:find("^czech") then return "cs" end
+    return l:sub(1, 2)
+end
+
+local function splitUtf8(str)
+    local chars = {}
+    for ch in str:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        table.insert(chars, ch)
+    end
+    return chars
+end
+
+-- True when either the X-Ray language or the book language declines names by suffix.
+function M:usesInflection(plugin)
+    if type(plugin) ~= "table" then return false end
+    local ai = plugin.ai_helper
+    if type(ai) == "table" and INFLECTED_LANGS[normalizeLangCode(ai.current_language)] then
+        return true
+    end
+    local doc = plugin.ui and plugin.ui.document
+    if type(doc) == "table" and doc.getProps then
+        local ok, props = pcall(doc.getProps, doc)
+        if ok and type(props) == "table" and INFLECTED_LANGS[normalizeLangCode(props.language)] then
+            return true
+        end
+    end
+    return false
+end
+
+-- Returns the stems under which a single lowercase word can appear once declined,
+-- as { s = stem, vowel = bool, max = bytes|nil } where `vowel` means the suffix must start
+-- with a vowel and `max` overrides the maximum suffix length:
+--   the word itself ("harry" -> "harryho", "tomáš" -> "tomášovi"),
+--   the word without its final vowel ("bratislava" -> "bratislave", "jana" -> "janou"),
+--   the elided form for a trailing -e-/-o- + consonant ("peter" -> "petra", "pavol" -> "pavlom").
+-- Words shorter than 4 characters return no stems.
+function M:inflectionStems(word)
+    if type(word) ~= "string" then return {} end
+    local chars = splitUtf8(word)
+    local n = #chars
+    if n < 4 then return {} end
+
+    local stems = { { s = word, vowel = false } }
+    local last = chars[n]
+    if INFLECTION_VOWELS[last] then
+        if n - 1 >= 4 then
+            table.insert(stems, { s = table.concat(chars, "", 1, n - 1), vowel = true })
+        elseif n - 1 == 3 then
+            table.insert(stems, { s = table.concat(chars, "", 1, n - 1), vowel = true, max = SHORT_STEM_MAX_SUFFIX })
+        end
+    elseif n >= 5 and (chars[n - 1] == "e" or chars[n - 1] == "o") and not INFLECTION_VOWELS[chars[n - 2]] then
+        table.insert(stems, { s = table.concat(chars, "", 1, n - 2) .. last, vowel = true })
+    end
+    return stems
+end
+
+-- True when `suffix` (the text following `stem` inside a word) is a plausible declension ending.
+function M:isInflectionSuffix(stem, suffix)
+    if #suffix > (stem.max or M.INFLECTION_MAX_SUFFIX) then return false end
+    if suffix:find("[^%a\128-\255]") then return false end
+    if suffix == "" or not stem.vowel then return true end
+    local first = suffix:match("^[%z\1-\127\194-\244][\128-\191]*")
+    return INFLECTION_VOWELS[first] == true
+end
+
+-- True when lowercase `word` is a declined form of lowercase `base` (e.g. "petrovi" of "peter").
+function M:isInflectedForm(base, word)
+    if type(base) ~= "string" or type(word) ~= "string" then return false end
+    if base == word then return true end
+    for _, stem in ipairs(self:inflectionStems(base)) do
+        if word:sub(1, #stem.s) == stem.s and self:isInflectionSuffix(stem, word:sub(#stem.s + 1)) then
+            return true
+        end
+    end
+    return false
+end
+
 return M
-
-
