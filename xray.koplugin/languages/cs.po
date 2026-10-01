@@ -1944,3 +1944,7 @@ msgstr "Přidá tlačítko 'X-Ray' do slovníku a nabídek výběru textu pro ok
 # en-hash: 93cba07454f06a4a960172bbd6e2a435
 msgid "yes"
 msgstr "Ano"
+
+# en-hash: d1591eafbd0b70a04df7b81673b81bfc
+msgid "menu_update_history"
+msgstr "Historie aktualizací"
