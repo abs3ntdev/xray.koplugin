@@ -507,11 +507,29 @@ function SeriesManager:removeSeriesImage(slug, image_id)
     return false
 end
 
+local function cleanItem(item, seen)
+    if type(item) ~= "table" then return item end
+    seen = seen or {}
+    if seen[item] then return seen[item] end
+    local clean = {}
+    seen[item] = clean
+    for k, v in pairs(item) do
+        if type(k) ~= "string" or k:sub(1, 1) ~= "_" then
+            if type(v) == "table" then
+                clean[k] = cleanItem(v, seen)
+            else
+                clean[k] = v
+            end
+        end
+    end
+    return clean
+end
+
 local function filterCurrentOnly(tbl)
     local res = {}
     for _, item in ipairs(tbl or {}) do
         if item and item.source ~= "series_prior" then
-            table.insert(res, item)
+            table.insert(res, cleanItem(item))
         end
     end
     return res
@@ -529,13 +547,17 @@ local function deepEqual(a, b, visited)
     visited[a] = b
 
     for k, v in pairs(a) do
-        if not deepEqual(v, b[k], visited) then
-            return false
+        if type(k) ~= "string" or k:sub(1, 1) ~= "_" then
+            if not deepEqual(v, b[k], visited) then
+                return false
+            end
         end
     end
     for k, _ in pairs(b) do
-        if a[k] == nil then
-            return false
+        if type(k) ~= "string" or k:sub(1, 1) ~= "_" then
+            if a[k] == nil then
+                return false
+            end
         end
     end
     return true
@@ -1100,7 +1122,7 @@ function SeriesManager:serializeToFile(f, obj, indent, seen)
         f:write("{\n")
         local child_indent = indent .. "  "
         for k, v in pairs(obj) do
-            if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" then
+            if type(v) ~= "function" and type(v) ~= "userdata" and type(v) ~= "thread" and (type(k) ~= "string" or k:sub(1, 1) ~= "_") then
                 f:write(child_indent)
                 if type(k) == "string" then
                     if k:match("^[%a_][%w_]*$") then

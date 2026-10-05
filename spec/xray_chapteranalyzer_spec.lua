@@ -201,6 +201,36 @@ describe("xray_chapteranalyzer", function()
             assert.are.equal(25, getPageText_calls[#getPageText_calls])
             assert.is_nil(text:find("text from page 26", 1, true))
         end)
+
+        it("returns empty string when start_page >= current_page in reflowable document", function()
+            local text = analyzer:getTextForAnalysis(mock_ui, 50000, nil, 80, 80)
+            assert.are.equal("", text)
+            assert.are.equal(0, #getTextFromXPointers_calls)
+
+            local text_ahead = analyzer:getTextForAnalysis(mock_ui, 50000, nil, 80, 85)
+            assert.are.equal("", text_ahead)
+            assert.are.equal(0, #getTextFromXPointers_calls)
+        end)
+
+        it("returns empty string when start_page >= current_page in page-based document", function()
+            local getPageText_calls = {}
+            local paged_ui = {
+                paging = {},
+                document = {
+                    getPageText = function(self, page)
+                        table.insert(getPageText_calls, page)
+                        return "text from page " .. page
+                    end,
+                },
+            }
+            local text = analyzer:getTextForAnalysis(paged_ui, 50000, nil, 25, 25)
+            assert.are.equal("", text)
+            assert.are.equal(0, #getPageText_calls)
+
+            local text_ahead = analyzer:getTextForAnalysis(paged_ui, 50000, nil, 25, 30)
+            assert.are.equal("", text_ahead)
+            assert.are.equal(0, #getPageText_calls)
+        end)
     end)
 
     describe("getDetailedChapterSamples", function()

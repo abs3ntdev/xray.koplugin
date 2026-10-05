@@ -174,6 +174,41 @@ describe("xray_fetch", function()
             if not ok then error(err) end
         end)
 
+        it("aborts silent background fetch when last_fetch_page >= end_page_analysis", function()
+            local UIManager = require("ui/uimanager")
+            local old_schedule = UIManager.scheduleIn
+            local callbacks = {}
+            UIManager.scheduleIn = function(_, delay, cb)
+                table.insert(callbacks, cb)
+            end
+
+            plugin.chapter_analyzer = {
+                getEndPageForCurrentPage = function(_, _, page) return 50 end,
+                getTextForAnalysis = function() error("Should not be called") end,
+            }
+            plugin.ui.getCurrentPage = function() return 50 end
+            plugin.book_data = { last_fetch_page = 50 }
+
+            local completed_success, completed_code
+            local ok, err = pcall(function()
+                plugin:continueWithFetch(50, true, 50, true, 50, function(success, code)
+                    completed_success = success
+                    completed_code = code
+                end)
+                assert.is_true(plugin.bg_fetch_active)
+                local cb = table.remove(callbacks, 1)
+                assert.is_not_nil(cb)
+                cb()
+
+                assert.is_false(plugin.bg_fetch_active)
+                assert.is_false(completed_success)
+                assert.are.equal("ALREADY_COVERED", completed_code)
+            end)
+
+            UIManager.scheduleIn = old_schedule
+            if not ok then error(err) end
+        end)
+
         it("cancels the owned child and allows a new fetch before the old poll runs", function()
             local UIManager = require("ui/uimanager")
             local old_schedule = UIManager.scheduleIn

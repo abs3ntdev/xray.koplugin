@@ -69,6 +69,8 @@ describe("X-Ray Background Catch-Up", function()
             bg_fetch_pending = false,
             bg_fetch_active = false,
             pending_background_fetch = false,
+            _reader_ready = true,
+            _chapter_fetch_callback = nil,
             last_bg_fetch_page = 100,
             last_bg_fetch_time = nil,
             chapters_fetched = {},
@@ -77,6 +79,7 @@ describe("X-Ray Background Catch-Up", function()
             ai_helper = {
                 settings = { auto_fetch_page_interval = 20, auto_fetch_cooldown = 60 },
                 hasApiKey = function() return has_key end,
+                loadLanguage = function() end,
             },
             ui = {
                 getCurrentPage = function() return current_page end,
@@ -97,7 +100,11 @@ describe("X-Ray Background Catch-Up", function()
                 },
             },
             loc = {
-                t = function(k, ...) return k end
+                t = function(self_loc, k, ...)
+                    if type(self_loc) == "string" then return self_loc end
+                    return k or ""
+                end,
+                loadLanguage = function() end,
             },
             log = function() end,
             checkSeriesContext = function(self)
@@ -125,6 +132,10 @@ describe("X-Ray Background Catch-Up", function()
             end,
             cancelActiveAIRequest = function() end,
             closeAllMenus = function() end,
+            showWelcomeCard = function() end,
+            showUnitConverterNewFeatureCard = function() end,
+            scanBookForUnits = function() end,
+            checkBookLanguageMatch = function() end,
             isNonNarrativeChapter = function(self, title)
                 return false
             end,
@@ -393,5 +404,65 @@ describe("X-Ray Background Catch-Up", function()
         advance(1)
         assert.are.equal(300, plugin.book_data.last_fetch_page)
         assert.is_false(plugin.pending_background_fetch)
+    end)
+
+    describe("Issue #143: Prevent redundant background AI fetch on book open", function()
+        it("does not schedule auto-fetch on onPageUpdate before reader is ready", function()
+            plugin._reader_ready = false
+            plugin.timeline = {} -- Cache not loaded yet
+            plugin:onPageUpdate(130) -- Chapter 4
+
+            assert.is_false(plugin.bg_fetch_pending)
+            assert.is_nil(plugin._chapter_fetch_callback)
+            advance(5)
+            assert.are.equal(0, #requests)
+        end)
+
+        it("clears pending chapter timer and evaluates current page in onReaderReady", function()
+            -- Simulate early onPageUpdate having scheduled something
+            local early_called = false
+            plugin._chapter_fetch_callback = function() early_called = true end
+            table.insert(scheduled, { time = now + 2, callback = plugin._chapter_fetch_callback })
+
+            plugin._reader_ready = false
+            current_page = 50 -- Chapter 2
+            plugin.autoLoadCache = function(self)
+                self.timeline = { { chapter = "Chapter 2", page = 50 } }
+                self.book_data = { last_fetch_page = 50 }
+            end
+
+            plugin:onReaderReady()
+
+            assert.is_true(plugin._reader_ready)
+            assert.is_nil(plugin._chapter_fetch_callback)
+            advance(5)
+            assert.is_false(early_called)
+            assert.are.equal(0, #requests)
+        end)
+
+        it("does not fetch in triggerBackgroundMergeFetch when last_fetch_page >= target_limit", function()
+            plugin.book_data.last_fetch_page = 165
+            current_page = 165 -- At last_fetch_page
+            plugin:triggerBackgroundMergeFetch("Chapter 6")
+            advance(5)
+            assert.are.equal(0, #requests)
+            assert.is_false(plugin.pending_background_fetch)
+
+            current_page = 100 -- Behind last_fetch_page
+            plugin:triggerBackgroundMergeFetch("Chapter 3")
+            advance(5)
+            assert.are.equal(0, #requests)
+            assert.is_false(plugin.pending_background_fetch)
+        end)
+
+        it("returns nil in getNextCatchUpBatch when start_page >= target_page", function()
+            local batch_end, title, is_final = plugin:getNextCatchUpBatch(165, 165)
+            assert.is_nil(batch_end)
+            assert.is_true(is_final)
+
+            local batch_end2, title2, is_final2 = plugin:getNextCatchUpBatch(165, 100)
+            assert.is_nil(batch_end2)
+            assert.is_true(is_final2)
+        end)
     end)
 end)

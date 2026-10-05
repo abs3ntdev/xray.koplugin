@@ -274,6 +274,51 @@ describe("xray_seriesmanager", function()
 
             manager.serializeToFile = orig_serialize
         end)
+
+        it("does not serialize private underscore fields like _sort_score, _norm_name, and _norm_aliases", function()
+            local test_data = {
+                books = {
+                    [1] = {
+                        title = "The Final Empire",
+                        characters = {
+                            {
+                                name = "Kelsier",
+                                _sort_score = 1500,
+                                _norm_name = "kelsier",
+                                aliases = { "Survivor" },
+                                _norm_aliases = { "survivor" }
+                            }
+                        },
+                        terms = {
+                            {
+                                name = "Allomancy",
+                                _sort_score = 900
+                            }
+                        }
+                    }
+                }
+            }
+
+            local saved = manager:saveSeriesCache(test_slug, test_data)
+            assert.is_true(saved)
+
+            local f = io.open(test_cache_path, "r")
+            assert.is_not_nil(f)
+            local content = f:read("*all")
+            f:close()
+
+            assert.is_nil(content:find("_sort_score"))
+            assert.is_nil(content:find("_norm_name"))
+            assert.is_nil(content:find("_norm_aliases"))
+
+            local loaded = manager:loadSeriesCache(test_slug)
+            assert.is_not_nil(loaded)
+            assert.are.equal("Kelsier", loaded.books[1].characters[1].name)
+            assert.is_nil(loaded.books[1].characters[1]._sort_score)
+            assert.is_nil(loaded.books[1].characters[1]._norm_name)
+            assert.is_nil(loaded.books[1].characters[1]._norm_aliases)
+            assert.is_nil(loaded.books[1].terms[1]._sort_score)
+        end)
     end)
 
     describe("mergeSeriesContext", function()
@@ -570,6 +615,191 @@ describe("xray_seriesmanager", function()
 
             local loaded = manager:loadSeriesCache("mistborn")
             assert.are.equal("/new/path/mistborn_1.epub", loaded.book_paths[1])
+        end)
+
+        it("skips saving when book data contains in-memory _sort_score, _norm_name, or _norm_aliases", function()
+            local book_data = {
+                title = "The Final Empire",
+                author = "Brandon Sanderson",
+                characters = {
+                    {
+                        name = "Kelsier",
+                        description = "The Survivor",
+                        _sort_score = 5000,
+                        _norm_name = "kelsier",
+                        aliases = { "Survivor" },
+                        _norm_aliases = { "survivor" }
+                    }
+                },
+                locations = {},
+                terms = {
+                    { name = "Allomancy", description = "Magic system", _sort_score = 3000 }
+                },
+                timeline = {}
+            }
+
+            -- Initial sync saves to disk
+            local ok1 = manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+            assert.is_true(ok1)
+
+            local save_calls = 0
+            local orig_save = manager.saveSeriesCache
+            manager.saveSeriesCache = function(self, ...)
+                save_calls = save_calls + 1
+                return orig_save(self, ...)
+            end
+
+            -- Second sync with the same in-memory data (containing _sort_score)
+            local ok2 = manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+            assert.is_true(ok2)
+            assert.are.equal(0, save_calls)
+
+            manager.saveSeriesCache = orig_save
+        end)
+
+        it("skips saving when syncing clean book cache data against series cache after a merge (Issue #144)", function()
+            -- 1. Post-merge book data with _sort_score on characters and terms
+            local post_merge_data = {
+                title = "Morning Star",
+                author = "Pierce Brown",
+                characters = {
+                    { name = "Darrow", description = "Reaper of Mars", _sort_score = 8000, _norm_name = "darrow" },
+                    { name = "Sevro", description = "Howler 1", _sort_score = 6500, _norm_name = "sevro" }
+                },
+                locations = { { name = "Phobos" } },
+                terms = {
+                    { name = "SlingBlade", _sort_score = 2000 }
+                },
+                timeline = {}
+            }
+
+            -- Sync post-merge data
+            local ok1 = manager:syncBookToSeriesCache("red_rising", 3, post_merge_data, "/books/Morning Star.epub")
+            assert.is_true(ok1)
+
+            -- 2. Simulate next book open: loaded from book cache (where CacheManager stripped _sort_score and _norm_*)
+            local clean_book_cache_data = {
+                title = "Morning Star",
+                author = "Pierce Brown",
+                characters = {
+                    { name = "Darrow", description = "Reaper of Mars" },
+                    { name = "Sevro", description = "Howler 1" }
+                },
+                locations = { { name = "Phobos" } },
+                terms = {
+                    { name = "SlingBlade" }
+                },
+                timeline = {}
+            }
+
+            local save_calls = 0
+            local orig_save = manager.saveSeriesCache
+            manager.saveSeriesCache = function(self, ...)
+                save_calls = save_calls + 1
+                return orig_save(self, ...)
+            end
+
+            -- Sync on book open with clean book data
+            local ok2 = manager:syncBookToSeriesCache("red_rising", 3, clean_book_cache_data, "/books/Morning Star.epub")
+            assert.is_true(ok2)
+            assert.are.equal(0, save_calls)
+
+            -- Subsequent open also skips save
+            local ok3 = manager:syncBookToSeriesCache("red_rising", 3, clean_book_cache_data, "/books/Morning Star.epub")
+            assert.is_true(ok3)
+            assert.are.equal(0, save_calls)
+
+            manager.saveSeriesCache = orig_save
+        end)
+
+        it("skips saving even if existing series cache file on disk contains _sort_score (backward compatibility)", function()
+            -- Simulate legacy series cache file written by 26.9.30.1 that has _sort_score stored on disk
+            local legacy_series_path = "/tmp/koreader/settings/xray/series/legacy_series.lua"
+            local f = io.open(legacy_series_path, "w")
+            assert.is_not_nil(f)
+            f:write([[
+return {
+  cache_version = "6.0",
+  series_slug = "legacy_series",
+  book_paths = {
+    [1] = "/books/legacy_1.epub",
+  },
+  books = {
+    [1] = {
+      title = "Legacy Book",
+      author = "Legacy Author",
+      source = "local_xray",
+      characters = {
+        {
+          name = "Hero",
+          description = "Legacy description",
+          _sort_score = 4200,
+        },
+      },
+      locations = {},
+      terms = {},
+      timeline = {},
+    },
+  },
+}
+]])
+            f:close()
+
+            local save_calls = 0
+            local orig_save = manager.saveSeriesCache
+            manager.saveSeriesCache = function(self, ...)
+                save_calls = save_calls + 1
+                return orig_save(self, ...)
+            end
+
+            -- Clean book data from book cache
+            local book_data = {
+                title = "Legacy Book",
+                author = "Legacy Author",
+                characters = {
+                    { name = "Hero", description = "Legacy description" }
+                },
+                locations = {},
+                terms = {},
+                timeline = {}
+            }
+
+            local ok = manager:syncBookToSeriesCache("legacy_series", 1, book_data, "/books/legacy_1.epub")
+            assert.is_true(ok)
+            assert.are.equal(0, save_calls)
+
+            manager.saveSeriesCache = orig_save
+        end)
+
+        it("filterCurrentOnly strips private underscore fields so new_entry is clean in memory", function()
+            local book_data = {
+                title = "The Final Empire",
+                author = "Brandon Sanderson",
+                characters = {
+                    {
+                        name = "Kelsier",
+                        _sort_score = 9999,
+                        _norm_name = "kelsier",
+                        aliases = { "Survivor" },
+                        _norm_aliases = { "survivor" }
+                    }
+                },
+                locations = {},
+                terms = {},
+                timeline = {}
+            }
+
+            local ok = manager:syncBookToSeriesCache("mistborn", 1, book_data, "/books/mistborn_1.epub")
+            assert.is_true(ok)
+
+            local loaded = manager:loadSeriesCache("mistborn")
+            assert.is_not_nil(loaded)
+            assert.is_nil(loaded.books[1].characters[1]._sort_score)
+            assert.is_nil(loaded.books[1].characters[1]._norm_name)
+            assert.is_nil(loaded.books[1].characters[1]._norm_aliases)
+            -- Verify original book_data was not mutated
+            assert.are.equal(9999, book_data.characters[1]._sort_score)
+            assert.are.equal("kelsier", book_data.characters[1]._norm_name)
         end)
     end)
 

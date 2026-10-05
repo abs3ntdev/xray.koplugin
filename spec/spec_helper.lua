@@ -74,7 +74,8 @@ package.loaded["xray_logger"] = {
 }
 
 package.loaded["datastorage"] = {
-    getSettingsDir = function() return "/tmp/koreader/settings" end
+    getSettingsDir = function() return "/tmp/koreader/settings" end,
+    getDataDir = function() return "/tmp/koreader/data" end
 }
 
 -- UI tracking for testing

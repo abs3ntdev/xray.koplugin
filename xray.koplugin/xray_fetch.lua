@@ -682,7 +682,15 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
         -- reader's current position. In that case an incremental XPointer
         -- range would be empty/reversed; use the current chapter context.
         local stale_cached_position = false
-        if first_missing_page and first_missing_page > end_page_analysis then
+        if first_missing_page and first_missing_page >= end_page_analysis then
+            if is_silent then
+                self:log("XRayPlugin: Silent fetch aborted - current page already covered (last_fetch_page="
+                    .. tostring(first_missing_page) .. ", end_page=" .. tostring(end_page_analysis) .. ")")
+                if wait_msg then UIManager:close(wait_msg) end
+                finishActiveRequest()
+                notifyComplete(false, "ALREADY_COVERED")
+                return
+            end
             stale_cached_position = true
             self:log("XRayPlugin: Ignoring stale last_fetch_page=" .. tostring(first_missing_page)
                 .. " beyond analysis boundary=" .. tostring(end_page_analysis))

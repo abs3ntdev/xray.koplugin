@@ -576,8 +576,8 @@ function ChapterAnalyzer:getTextForAnalysis(ui, max_len, progress_callback, curr
                 if start_page >= current_p then
                     AIHelper:log("ChapterAnalyzer: start_page=" .. tostring(start_page)
                         .. " >= current_page=" .. tostring(current_p)
-                        .. "; treating as no incremental start (nothing new to fetch)")
-                    start_page = nil
+                        .. "; nothing new to fetch")
+                    return ""
                 else
                     local max_lookback = 60
                     local capped_start = math.max(start_page, current_p - max_lookback)
@@ -648,6 +648,12 @@ function ChapterAnalyzer:getTextForAnalysis(ui, max_len, progress_callback, curr
         local max_pages = 100 
         local calc_start_page = math.max(1, current_pos - max_pages)
         if start_page and start_page > 1 then
+            if start_page >= current_pos then
+                AIHelper:log("ChapterAnalyzer: start_page=" .. tostring(start_page)
+                    .. " >= current_pos=" .. tostring(current_pos)
+                    .. "; nothing new to fetch")
+                return ""
+            end
             calc_start_page = math.max(start_page, calc_start_page)
         end
         

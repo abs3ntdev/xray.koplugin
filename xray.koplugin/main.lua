@@ -141,6 +141,8 @@ function XRayPlugin:init()
     self.bg_fetch_pending = false
     self.pending_background_fetch = false
     self._background_catch_up_callback = nil
+    self._chapter_fetch_callback = nil
+    self._reader_ready = false
     self.auto_fetch_enabled = not (self.ai_helper.settings and
         self.ai_helper.settings.auto_fetch_on_chapter == false)
 
@@ -414,6 +416,7 @@ end
 
 function XRayPlugin:onReaderReady()
     self._cached_toc = nil
+    self:clearPendingBackgroundFetch()
     self:autoLoadCache()
     -- Reset per-session chapter fetch tracking
     self.last_auto_chapter = nil
@@ -421,6 +424,12 @@ function XRayPlugin:onReaderReady()
     self.chapters_fetched = {}
     self.bg_fetch_pending = false
     self:clearPendingBackgroundFetch()
+    self._reader_ready = true
+
+    -- Re-evaluate current page now that cache is loaded
+    if self.auto_fetch_enabled then
+        self:onPageUpdate(self:getCurrentPage())
+    end
 
     local settings = self.ai_helper and self.ai_helper.settings or {}
 
@@ -445,6 +454,9 @@ function XRayPlugin:onReaderReady()
                     else
                         self:scanBookForUnits()
                     end
+                else
+                    -- Auto-scan off: only restore underlines from an existing cache
+                    self:scanBookForUnits()
                 end
             end
         end
@@ -511,12 +523,21 @@ function XRayPlugin:onReaderReady()
 end
 
 
+function XRayPlugin:clearChapterFetchTimer()
+    if self._chapter_fetch_callback then
+        UIManager:unschedule(self._chapter_fetch_callback)
+        self._chapter_fetch_callback = nil
+    end
+end
+
 function XRayPlugin:clearPendingBackgroundFetch()
     self.pending_background_fetch = false
+    self.bg_fetch_pending = false
     if self._background_catch_up_callback then
         UIManager:unschedule(self._background_catch_up_callback)
         self._background_catch_up_callback = nil
     end
+    self:clearChapterFetchTimer()
 end
 
 function XRayPlugin:getCurrentPage()
@@ -562,6 +583,9 @@ function XRayPlugin:isCatchUpNeeded()
 end
 
 function XRayPlugin:getNextCatchUpBatch(start_page, target_page)
+    if target_page <= start_page then
+        return nil, nil, true
+    end
     local toc = self:_getFlatToc() or {}
     local candidate_chapters = {}
     for i, entry in ipairs(toc) do
@@ -766,6 +790,7 @@ function XRayPlugin:onPageUpdate(pageno)
     end
     
     if not self.ui or not self.ui.document then return end
+    if not self._reader_ready then return end
 
     -- 1. Ultra mode: bypass chapter-boundary and is_populated guards; fire on page interval alone
     local page_interval = self.ai_helper.settings and self.ai_helper.settings.auto_fetch_page_interval
@@ -795,11 +820,17 @@ function XRayPlugin:onPageUpdate(pageno)
 
                 if not (self.bg_fetch_pending or self.bg_fetch_active) then
                     self.bg_fetch_pending = true
-                    UIManager:scheduleIn(2, function()
+                    self:clearChapterFetchTimer()
+                    local cb
+                    cb = function()
+                        if self._chapter_fetch_callback ~= cb then return end
+                        self._chapter_fetch_callback = nil
                         if self.destroyed or not self.ui or not self.ui.document then return end
                         self.bg_fetch_pending = false
                         self:triggerBackgroundMergeFetch(chapter_title)
-                    end)
+                    end
+                    self._chapter_fetch_callback = cb
+                    UIManager:scheduleIn(2, cb)
                 end
             end
             return
@@ -837,11 +868,17 @@ function XRayPlugin:onPageUpdate(pageno)
         end
         chapter_title = chapter_title or ("Page " .. tostring(pageno))
 
-        UIManager:scheduleIn(2, function()
+        self:clearChapterFetchTimer()
+        local cb
+        cb = function()
+            if self._chapter_fetch_callback ~= cb then return end
+            self._chapter_fetch_callback = nil
             if self.destroyed or not self.ui or not self.ui.document then return end
             self.bg_fetch_pending = false
             self:triggerBackgroundMergeFetch(chapter_title)
-        end)
+        end
+        self._chapter_fetch_callback = cb
+        UIManager:scheduleIn(2, cb)
         return
     end
 
@@ -934,11 +971,17 @@ function XRayPlugin:onPageUpdate(pageno)
     self.bg_fetch_pending = true
 
     -- Wait 2s for the reader to settle on the new chapter before fetching
-    UIManager:scheduleIn(2, function()
+    self:clearChapterFetchTimer()
+    local cb
+    cb = function()
+        if self._chapter_fetch_callback ~= cb then return end
+        self._chapter_fetch_callback = nil
         if self.destroyed or not self.ui or not self.ui.document then return end
         self.bg_fetch_pending = false
         self:triggerBackgroundMergeFetch(chapter_title)
-    end)
+    end
+    self._chapter_fetch_callback = cb
+    UIManager:scheduleIn(2, cb)
 end
 
 function XRayPlugin:triggerBackgroundMergeFetch(chapter_title)
@@ -971,6 +1014,16 @@ function XRayPlugin:triggerBackgroundMergeFetch(chapter_title)
             return
         end
 
+        local document = self.ui.document
+        local target_limit, is_full_book = self:getCatchUpTargetLimit()
+        if target_limit <= 0 then return end
+
+        local last_fetch_page = self.book_data and self.book_data.last_fetch_page
+        if last_fetch_page and last_fetch_page >= target_limit then
+            self:clearPendingBackgroundFetch()
+            return
+        end
+
         -- Cooldown check to prevent API spamming
         local cooldown = self.ai_helper.settings and self.ai_helper.settings.auto_fetch_cooldown or 300
         local now = os.time()
@@ -979,13 +1032,9 @@ function XRayPlugin:triggerBackgroundMergeFetch(chapter_title)
         end
         self.last_bg_fetch_time = now
 
-        local document = self.ui.document
-        local target_limit, is_full_book = self:getCatchUpTargetLimit()
-        if target_limit <= 0 then return end
         local total_pages = self.ui.document:getPageCount() or target_limit
         if total_pages == 0 then total_pages = target_limit end
 
-        local last_fetch_page = self.book_data and self.book_data.last_fetch_page
         local start_page = last_fetch_page or 0
         local batch_end_page, batch_chapter_title, is_final = self:getNextCatchUpBatch(start_page, target_limit)
         local target_page = batch_end_page or target_limit
@@ -2974,16 +3023,20 @@ end
 
 -- --- Book Type Detection Engine ---
 
+local function isArchiveFormat(path)
+    if not path then return false end
+    local ext = path:match("%.([^%.]+)$")
+    if not ext then return false end
+    ext = ext:lower()
+    return ext == "cbz" or ext == "cbr" or ext == "cb7" or ext == "cbt"
+end
+
 function XRayPlugin:detectBookTypeHeuristic()
     local book_path = self.ui and self.ui.document and self.ui.document.file
     if not book_path then return "unknown", false end
     
-    local ext = book_path:match("%.([^%.]+)$")
-    if ext then
-        ext = ext:lower()
-        if ext == "cbz" or ext == "cbr" or ext == "cb7" then
-            return "manga", true -- archive format for comics/manga: highly confident
-        end
+    if isArchiveFormat(book_path) then
+        return "manga", true -- archive format for comics/manga: highly confident
     end
 
     local props = self.ui.document:getProps() or {}
@@ -3036,7 +3089,9 @@ function XRayPlugin:detectBookTypeHeuristic()
     if match_keywords(title, nonfiction_kw) or match_keywords(filename, nonfiction_kw) then return "prose_nonfiction", false end
 
     -- 3. File extension fallback
+    local ext = book_path:match("%.([^%.]+)$")
     if ext then
+        ext = ext:lower()
         if ext == "epub" or ext == "mobi" or ext == "azw" or ext == "azw3" or ext == "fb2" or ext == "txt" then
             return "prose_fiction", false -- default to prose fiction (low confidence guess)
         end
@@ -3049,6 +3104,13 @@ function XRayPlugin:getEffectiveBookType()
     local cached = self.book_data or {}
     if cached.book_type_label_override and cached.book_type_label_override ~= "auto" then
         return cached.book_type_label_override
+    end
+    local book_path = self.ui and self.ui.document and self.ui.document.file
+    if isArchiveFormat(book_path) then
+        if cached.book_type_label == "manga" or cached.book_type_label == "graphic_novel" then
+            return cached.book_type_label
+        end
+        return "manga"
     end
     if cached.book_type_label and cached.book_type_label ~= "" then
         return cached.book_type_label
@@ -3069,12 +3131,16 @@ function XRayPlugin:triggerBookTypeDetection()
         self.book_data = {}
     end
     local cached = self.book_data
+    local is_archive = isArchiveFormat(doc_file)
 
     local function newBookTypeResultFile()
-        local DataStorage = require("datastorage")
+        local ok_ds, DataStorage = pcall(require, "datastorage")
+        local data_dir = (ok_ds and DataStorage and DataStorage.getDataDir and DataStorage:getDataDir())
+                      or (ok_ds and DataStorage and DataStorage.getSettingsDir and DataStorage:getSettingsDir())
+                      or "/tmp"
         return string.format(
             "%s/xray/book_type_detect_res_%d_%d.json",
-            DataStorage:getDataDir(),
+            data_dir,
             os.time(),
             math.random(1000, 9999)
         )
@@ -3087,34 +3153,68 @@ function XRayPlugin:triggerBookTypeDetection()
     end
 
     local function checkAndTriggerScan()
-        if has_unit_cache then
-            -- Just apply underlines, do not rescan
-            if self.applyUnitUnderlines then self:applyUnitUnderlines() end
+        local settings = self.ai_helper and self.ai_helper.settings or {}
+        local disabled_types = settings.unit_disabled_book_types or { "manga", "graphic_novel", "children", "poetry" }
+        local book_type = self:getEffectiveBookType()
+        local is_disabled = false
+        for _, t in ipairs(disabled_types) do
+            if t == book_type then
+                is_disabled = true
+                break
+            end
+        end
+
+        if is_disabled then
+            if self.clearUnitUnderlines then self:clearUnitUnderlines() end
+        elseif not has_unit_cache then
+            if self.scanBookForUnits then self:scanBookForUnits() end
         else
-            -- Check if current type is disabled before scanning
-            local settings = self.ai_helper and self.ai_helper.settings or {}
-            local disabled_types = settings.unit_disabled_book_types or { "manga", "graphic_novel", "children", "poetry" }
-            local book_type = self:getEffectiveBookType()
-            local is_disabled = false
-            for _, t in ipairs(disabled_types) do
-                if t == book_type then
-                    is_disabled = true
-                    break
-                end
-            end
-            if is_disabled then
-                if self.clearUnitUnderlines then self:clearUnitUnderlines() end
-            else
-                if self.scanBookForUnits then self:scanBookForUnits() end
-            end
+            if self.applyUnitUnderlines then self:applyUnitUnderlines() end
         end
     end
 
     if cached.book_type_label and cached.book_type_label ~= "" then
+        -- Backward-compatibility & self-healing for archive formats:
+        -- Never let archive formats be classified as prose fiction or non-comic types
+        local cache_dirty = false
+        if is_archive then
+            if cached.book_type_label ~= "manga" and cached.book_type_label ~= "graphic_novel" then
+                cached.book_type_label = "manga"
+                cache_dirty = true
+            end
+            if cached.book_type_confident ~= true then
+                cached.book_type_confident = true
+                cache_dirty = true
+            end
+            if cached.book_type_detected_by_ai then
+                cached.book_type_detected_by_ai = false
+                cache_dirty = true
+            end
+        elseif cached.book_type_confident == nil then
+            -- Check if legacy cache was a confident heuristic match
+            local heur, is_confident = self:detectBookTypeHeuristic()
+            if is_confident and heur == cached.book_type_label then
+                cached.book_type_confident = true
+                cache_dirty = true
+            end
+        end
+
+        if cache_dirty and self.cache_manager and doc_file then
+            self.cache_manager:asyncSaveCache(doc_file, cached)
+        end
+
         checkAndTriggerScan()
-        -- If the cached label was not detected by AI, check if we should refine it via AI background process
-        if not cached.book_type_detected_by_ai and self.ai_helper:hasApiKey() then
-            -- Trigger AI in background to refine low-confidence or format-fallback guesses
+
+        local has_override = cached.book_type_label_override and cached.book_type_label_override ~= "auto"
+        local should_refine = not is_archive
+            and not has_override
+            and not cached.book_type_confident
+            and not cached.book_type_detected_by_ai
+            and not self._book_type_detecting
+            and self.ai_helper:hasApiKey()
+
+        if should_refine then
+            self._book_type_detecting = true
             local result_file = newBookTypeResultFile()
             local props = (self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps()) or {}
             local title = props.title or "Unknown"
@@ -3124,19 +3224,31 @@ function XRayPlugin:triggerBookTypeDetection()
             local pid = self.ai_helper:detectBookTypeAsync(title, author, series, description, result_file)
             if pid then
                 local function pollResult()
-                    if self.destroyed or not self.ui or not self.ui.document then return end
+                    if self.destroyed or not self.ui or not self.ui.document then
+                        self._book_type_detecting = nil
+                        return
+                    end
                     local res = self.ai_helper:checkAsyncResult(result_file, pid)
                     if res == nil then
                         UIManager:scheduleIn(1, pollResult)
-                    elseif type(res) == "table" and res.book_type_label then
-                        cached.book_type_label = res.book_type_label
-                        cached.book_type_detected_by_ai = true
-                        if self.cache_manager and doc_file then
-                            self.cache_manager:asyncSaveCache(doc_file, cached)
+                    else
+                        self._book_type_detecting = nil
+                        if type(res) == "table" and res.book_type_label then
+                            if not isArchiveFormat(doc_file) then
+                                cached.book_type_label = res.book_type_label
+                                cached.book_type_detected_by_ai = true
+                                cached.book_type_confident = true
+                                if self.cache_manager and doc_file then
+                                    self.cache_manager:asyncSaveCache(doc_file, cached)
+                                end
+                                checkAndTriggerScan()
+                            end
                         end
                     end
                 end
                 UIManager:scheduleIn(1, pollResult)
+            else
+                self._book_type_detecting = nil
             end
         end
         return true
@@ -3144,62 +3256,76 @@ function XRayPlugin:triggerBookTypeDetection()
 
     -- Run Layer 1 & 2 heuristic
     local heur, is_confident = self:detectBookTypeHeuristic()
+    if is_archive then
+        heur = "manga"
+        is_confident = true
+    end
+
     if heur ~= "unknown" then
         cached.book_type_label = heur
-        if is_confident then
-            cached.book_type_detected_by_ai = false -- high confidence heuristic, no AI needed
-            if self.cache_manager and doc_file then
-                self.cache_manager:asyncSaveCache(doc_file, cached)
-            end
-            checkAndTriggerScan()
+        cached.book_type_confident = is_confident or is_archive
+        cached.book_type_detected_by_ai = false
+        if self.cache_manager and doc_file then
+            self.cache_manager:asyncSaveCache(doc_file, cached)
+        end
+        checkAndTriggerScan()
+
+        if cached.book_type_confident then
+            return true -- high confidence heuristic or archive format, no AI needed
+        end
+
+        -- Low confidence heuristic, we run Layer 3 AI background refinement since confidence is low
+        if not self.ai_helper:hasApiKey() or self._book_type_detecting then
             return true
-        else
-            -- Low confidence heuristic, we save it as a starting point and scan
-            cached.book_type_detected_by_ai = false
-            if self.cache_manager and doc_file then
-                self.cache_manager:asyncSaveCache(doc_file, cached)
-            end
-            checkAndTriggerScan()
-            
-            -- Run Layer 3 AI background refinement since confidence is low
-            if not self.ai_helper:hasApiKey() then
-                return true
-            end
-            self:log("XRayPlugin: Starting Layer 3 AI book type refinement in background...")
-            local result_file = newBookTypeResultFile()
-            local props = (self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps()) or {}
-            local title = props.title or "Unknown"
-            local author = props.authors or "Unknown"
-            local series = props.series or props.Series or "None"
-            local description = props.subject or props.Subject or "None"
-            local pid = self.ai_helper:detectBookTypeAsync(title, author, series, description, result_file)
-            if pid then
-                local function pollResult()
-                    if self.destroyed or not self.ui or not self.ui.document then return end
-                    local res = self.ai_helper:checkAsyncResult(result_file, pid)
-                    if res == nil then
-                        UIManager:scheduleIn(1, pollResult)
-                    elseif type(res) == "table" and res.book_type_label then
-                        self:log("XRayPlugin: Book type AI refinement complete! Result: " .. tostring(res.book_type_label))
-                        cached.book_type_label = res.book_type_label
-                        cached.book_type_detected_by_ai = true
-                        if self.cache_manager and doc_file then
-                            self.cache_manager:asyncSaveCache(doc_file, cached)
+        end
+        self._book_type_detecting = true
+        self:log("XRayPlugin: Starting Layer 3 AI book type refinement in background...")
+        local result_file = newBookTypeResultFile()
+        local props = (self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps()) or {}
+        local title = props.title or "Unknown"
+        local author = props.authors or "Unknown"
+        local series = props.series or props.Series or "None"
+        local description = props.subject or props.Subject or "None"
+        local pid = self.ai_helper:detectBookTypeAsync(title, author, series, description, result_file)
+        if pid then
+            local function pollResult()
+                if self.destroyed or not self.ui or not self.ui.document then
+                    self._book_type_detecting = nil
+                    return
+                end
+                local res = self.ai_helper:checkAsyncResult(result_file, pid)
+                if res == nil then
+                    UIManager:scheduleIn(1, pollResult)
+                else
+                    self._book_type_detecting = nil
+                    if type(res) == "table" and res.book_type_label then
+                        if not isArchiveFormat(doc_file) then
+                            self:log("XRayPlugin: Book type AI refinement complete! Result: " .. tostring(res.book_type_label))
+                            cached.book_type_label = res.book_type_label
+                            cached.book_type_detected_by_ai = true
+                            cached.book_type_confident = true
+                            if self.cache_manager and doc_file then
+                                self.cache_manager:asyncSaveCache(doc_file, cached)
+                            end
+                            checkAndTriggerScan()
                         end
                     end
                 end
-                UIManager:scheduleIn(1, pollResult)
             end
-            return true
+            UIManager:scheduleIn(1, pollResult)
+        else
+            self._book_type_detecting = nil
         end
+        return true
     end
 
     -- Run Layer 3 LLM classification directly if API keys exist and heuristic was unknown
-    if not self.ai_helper:hasApiKey() then
+    if not self.ai_helper:hasApiKey() or self._book_type_detecting or is_archive then
         checkAndTriggerScan()
         return true
     end
 
+    self._book_type_detecting = true
     self:log("XRayPlugin: Starting Layer 3 AI book type detection in background...")
     local result_file = newBookTypeResultFile()
     
@@ -3211,50 +3337,37 @@ function XRayPlugin:triggerBookTypeDetection()
 
     local pid, err_c, err_m = self.ai_helper:detectBookTypeAsync(title, author, series, description, result_file)
     if not pid then
+        self._book_type_detecting = nil
         self:log("XRayPlugin: Book type AI detection trigger failed: " .. tostring(err_m))
         checkAndTriggerScan()
         return true
     end
 
     local function pollResult()
-        if self.destroyed or not self.ui or not self.ui.document then return end
+        if self.destroyed or not self.ui or not self.ui.document then
+            self._book_type_detecting = nil
+            return
+        end
         local res = self.ai_helper:checkAsyncResult(result_file, pid)
         if res == nil then
             UIManager:scheduleIn(1, pollResult)
-        elseif type(res) == "table" and res.book_type_label then
-            self:log("XRayPlugin: Book type AI detection complete! Result: " .. tostring(res.book_type_label))
-            cached.book_type_label = res.book_type_label
-            cached.book_type_detected_by_ai = true
-            if self.cache_manager and doc_file then
-                self.cache_manager:asyncSaveCache(doc_file, cached)
-            end
-            -- Check scan triggers again now that AI classification finished
-            local has_unit_cache_now = false
-            if self.loadUnitCache then
-                has_unit_cache_now = self:loadUnitCache()
-            end
-            if not has_unit_cache_now then
-                local settings = self.ai_helper and self.ai_helper.settings or {}
-                local disabled_types = settings.unit_disabled_book_types or { "manga", "graphic_novel", "children", "poetry" }
-                local book_type = self:getEffectiveBookType()
-                local is_disabled = false
-                for _, t in ipairs(disabled_types) do
-                    if t == book_type then
-                        is_disabled = true
-                        break
+        else
+            self._book_type_detecting = nil
+            if type(res) == "table" and res.book_type_label then
+                if not isArchiveFormat(doc_file) then
+                    self:log("XRayPlugin: Book type AI detection complete! Result: " .. tostring(res.book_type_label))
+                    cached.book_type_label = res.book_type_label
+                    cached.book_type_detected_by_ai = true
+                    cached.book_type_confident = true
+                    if self.cache_manager and doc_file then
+                        self.cache_manager:asyncSaveCache(doc_file, cached)
                     end
-                end
-                if is_disabled then
-                    if self.clearUnitUnderlines then self:clearUnitUnderlines() end
-                else
-                    if self.scanBookForUnits then self:scanBookForUnits() end
+                    checkAndTriggerScan()
                 end
             else
-                if self.applyUnitUnderlines then self:applyUnitUnderlines() end
+                self:log("XRayPlugin: Book type AI detection returned invalid or empty result: " .. tostring(res))
+                checkAndTriggerScan()
             end
-        else
-            self:log("XRayPlugin: Book type AI detection returned invalid or empty result: " .. tostring(res))
-            checkAndTriggerScan()
         end
     end
     UIManager:scheduleIn(1, pollResult)
@@ -3357,10 +3470,11 @@ function XRayPlugin:getBookTypeFilterMenu()
     local function getDetectedStr()
         local cached = self.book_data or {}
         local raw = cached.book_type_label
-        local via = "AI"
-        if not raw or raw == "" then
+        local via = "Heuristic"
+        if cached.book_type_detected_by_ai then
+            via = "AI"
+        elseif not raw or raw == "" then
             raw = self:detectBookTypeHeuristic()
-            via = "Heuristic"
         end
         local label = "Unknown/Other"
         for _, bt in ipairs(book_types) do
