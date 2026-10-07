@@ -1130,7 +1130,7 @@ describe("xray_ui", function()
             -- Mock _getUnitCachePath
             local original_getUnitCachePath = plugin._getUnitCachePath
             rawset(plugin, "_getUnitCachePath", function(this, resolved_dir)
-                resolved_dir = resolved_dir or _getResolvedDirection(this)
+                resolved_dir = resolved_dir or (this.ai_helper and this.ai_helper.settings and this.ai_helper.settings.unit_conversion_direction) or "to_imperial"
                 return test_cache_file .. "_" .. resolved_dir
             end)
 
@@ -1184,6 +1184,27 @@ describe("xray_ui", function()
             plugin.ai_helper.settings.unit_conversion_direction = "to_metric"
             local loaded_invalid = plugin:loadUnitCache()
             assert.is_false(loaded_invalid)
+
+            -- Test backwards-compatibility: v30 cache accepted for non-Ukrainian book
+            plugin.ai_helper.settings.unit_conversion_direction = "to_imperial"
+            local cache_file = plugin:_getUnitCachePath()
+            local fw = io.open(cache_file, "w")
+            fw:write("v30|true|true|true|true|true|true\n")
+            fw:write("xp_1\txp_2\t10 cm\t3.94 inches\tlength\n")
+            fw:close()
+
+            plugin.unit_xp_matches = {}
+            local loaded_v30 = plugin:loadUnitCache()
+            assert.is_true(loaded_v30)
+            assert.are.equal(1, #plugin.unit_xp_matches)
+
+            -- Test v30 cache rejected for Ukrainian book (forces rebuild)
+            local orig_getProps = plugin.ui.document.getProps
+            plugin.ui.document.getProps = function() return { language = "uk" } end
+            plugin.unit_xp_matches = {}
+            local loaded_v30_uk = plugin:loadUnitCache()
+            assert.is_false(loaded_v30_uk)
+            plugin.ui.document.getProps = orig_getProps
         end)
     end)
 

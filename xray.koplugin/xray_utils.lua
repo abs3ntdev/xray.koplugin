@@ -550,18 +550,37 @@ function M:getMemoryInfo(meminfo_path)
     local free_kb = info["MemFree"] or 0
     local buffers_kb = info["Buffers"] or 0
     local cached_kb = info["Cached"] or 0
-    local available_kb = info["MemAvailable"] or (free_kb + buffers_kb + cached_kb)
+    local shmem_kb = info["Shmem"] or 0
+    local sreclaimable_kb = info["SReclaimable"] or 0
+
+    local available_kb
+    if info["MemAvailable"] then
+        available_kb = info["MemAvailable"]
+    else
+        -- Fallback for legacy Linux kernels (< 3.14, e.g. Kindle 2.6 / 3.0.35):
+        -- Shmem is accounted under Cached in /proc/meminfo, but cannot be evicted
+        -- without swap (Kindle has no swap). Subtract Shmem to find true reclaimable
+        -- file cache, and discount by 50% to prevent pushing the system into thrashing/OOM.
+        local reclaimable_cache = math.max(0, cached_kb - shmem_kb) + sreclaimable_kb
+        available_kb = free_kb + math.floor(0.5 * (buffers_kb + reclaimable_cache))
+    end
+
     return {
         total_kb = total_kb,
         free_kb = free_kb,
         available_kb = available_kb,
         buffers_kb = buffers_kb,
         cached_kb = cached_kb,
+        shmem_kb = shmem_kb,
+        sreclaimable_kb = sreclaimable_kb,
     }
 end
 
 function M:isLowMemory(threshold_kb, meminfo_path)
-    threshold_kb = threshold_kb or (30 * 1024) -- Default 30 MB
+    if not threshold_kb then
+        local is_k = Device and Device.isKindle and Device:isKindle()
+        threshold_kb = is_k and (65 * 1024) or (30 * 1024)
+    end
     local mem = self:getMemoryInfo(meminfo_path)
     if not mem or mem.available_kb <= 0 then
         return false, nil, nil

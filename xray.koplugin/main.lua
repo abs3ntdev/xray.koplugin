@@ -457,8 +457,11 @@ function XRayPlugin:onReaderReady()
                     -- Defer whole-book unit scanning by 20s so it doesn't collide with KOReader startup
                     UIManager:scheduleIn(20, function()
                         if self.destroyed or not self.ui or not self.ui.document then return end
-                        if utils:isLowMemory(35 * 1024) then
-                            self:log("XRayPlugin: Memory low (<35MB), skipping automatic unit book scan")
+                        local ok_dev, Device = pcall(require, "device")
+                        local is_k = ok_dev and Device and Device.isKindle and Device:isKindle()
+                        local mem_threshold = is_k and (65 * 1024) or (35 * 1024)
+                        if utils:isLowMemory(mem_threshold) then
+                            self:log(string.format("XRayPlugin: Memory low (<%dMB), skipping automatic unit book scan", math.floor(mem_threshold / 1024)))
                             return
                         end
                         if self.triggerBookTypeDetection then
@@ -3236,6 +3239,17 @@ function XRayPlugin:triggerBookTypeDetection()
             and self.ai_helper:hasApiKey()
 
         if should_refine then
+            -- Avoid forking background AI processes concurrently while unit scanner is running or starting
+            if self._unit_scan_in_progress or not has_unit_cache then
+                UIManager:scheduleIn(15, function()
+                    if not self.destroyed and self.ui and self.ui.document and not self._unit_scan_in_progress then
+                        if self.triggerBookTypeDetection then
+                            self:triggerBookTypeDetection()
+                        end
+                    end
+                end)
+                return
+            end
             self._book_type_detecting = true
             local result_file = newBookTypeResultFile()
             local props = (self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps()) or {}

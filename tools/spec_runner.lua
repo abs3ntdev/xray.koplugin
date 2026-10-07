@@ -162,7 +162,8 @@ local specs = {
     "spec/xray_imageviewer_spec.lua",
     "spec/xray_nontouch_spec.lua",
     "spec/xray_background_fetch_spec.lua",
-    "spec/xray_book_type_spec.lua"
+    "spec/xray_book_type_spec.lua",
+    "spec/xray_low_memory_guard_spec.lua"
 }
 
 if arg and arg[1] then
