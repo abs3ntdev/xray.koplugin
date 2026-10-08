@@ -1035,6 +1035,7 @@ end
 -- Secure-tagged subscription requests always use SecureHTTP here, never refresh
 -- credentials. On failure the chain continues to the configured secondary.
 function AIHelper:_runChildRequests(request_params, result_file)
+    collectgarbage("collect")
     self:log("AIHelper Child: Started background process")
     -- Legacy (API-key) transport is initialised lazily, only when a
     -- non-subscription request actually needs it. Subscription requests never
@@ -1118,6 +1119,7 @@ function AIHelper:_runChildRequests(request_params, result_file)
             }
             ok, code, response_headers, status = http_req.request(request)
             response_text = table.concat(response_body)
+            response_body = nil
             code_num = tonumber(code)
 
             if code_num == 503 and attempts < max_attempts then
@@ -1339,6 +1341,8 @@ function AIHelper:_runChildRequests(request_params, result_file)
                     f:close()
                     self:log("AIHelper Child: Result written to " .. result_file)
                     success_found = true
+                    response_text = nil
+                    collectgarbage("collect")
                     break
                 else
                     self:log("AIHelper Child: Failed to open result file " .. result_file)
@@ -1355,6 +1359,8 @@ function AIHelper:_runChildRequests(request_params, result_file)
                         f:write(response_text)
                         f:close()
                     end
+                    response_text = nil
+                    collectgarbage("collect")
                 end
             end
         else
@@ -1371,6 +1377,8 @@ function AIHelper:_runChildRequests(request_params, result_file)
                     f:write(response_text)
                     f:close()
                 end
+                response_text = nil
+                collectgarbage("collect")
             end
         end
         ::continue_requests::
@@ -1404,6 +1412,8 @@ function AIHelper:makeRequestAsync(request_params, result_file)
         local child_ok, child_err = pcall(function()
             self:_runChildRequests(request_params, result_file)
         end)
+
+        collectgarbage("collect")
         
         if not child_ok then
             self:log("AIHelper Child: CRITICAL ERROR: " .. tostring(child_err))
@@ -1529,6 +1539,7 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
     if not first_newline then return false, "error_parse", "Malformed async result (empty or no newline)" end
     local code_str = content:sub(1, first_newline - 1)
     local rest = content:sub(first_newline + 1)
+    content = nil
     local second_newline = rest:find("\n")
     if not second_newline then return false, "error_parse", "Malformed async result (no provider line)" end
     local provider = rest:sub(1, second_newline - 1)
@@ -1586,6 +1597,7 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
 
     -- Parse the response based on provider
     local success, data = pcall(json.decode, response_text)
+    response_text = nil
     if not success or type(data) ~= "table" then return false, "error_parse", "JSON decode failed" end
 
     local ai_text = ""
@@ -1655,8 +1667,11 @@ function AIHelper:checkAsyncResult(result_file, expected_pid)
         return false, "error_parse", "No text in AI response (finishReason=" .. tostring(finish_reason) .. ")"
     end
 
+    data = nil
     local parsed_data, parse_err = self:parseAIResponse(ai_text)
+    ai_text = nil
     if parsed_data then
+        collectgarbage("step", 100)
         return parsed_data
     else
         return false, "error_parse", tostring(parse_err)

@@ -38,6 +38,7 @@ describe("xray_utils", function()
             device.isPocketBook = function() return false end
             device.isAndroid = function() return false end
             assert.is_false(utils:isLowPowerForScan())
+            device.isKindle = function() return true end
         end)
     end)
 

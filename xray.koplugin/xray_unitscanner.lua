@@ -585,7 +585,37 @@ function M:loadUnitCache(resolved_dir)
     
     local settings = self.ai_helper and self.ai_helper.settings or {}
     local current_sig = _getSettingsSignature(self, settings)
-    if signature ~= current_sig then
+    local sig_matches = (signature == current_sig)
+
+    -- Backwards-compatibility for non-Ukrainian books:
+    -- v31 only added Ukrainian unit aliases and numerals. For books in any other
+    -- language, existing v30 caches are 100% valid and should be accepted so users
+    -- don't suffer a full-book re-scan storm on update.
+    if not sig_matches and signature:match("^v30|") then
+        local is_ukrainian = false
+        local doc = self.ui and self.ui.document
+        if doc and doc.getProps then
+            local ok, props = pcall(doc.getProps, doc)
+            if ok and type(props) == "table" and props.language then
+                local l = tostring(props.language):lower():gsub("_", "-")
+                if l:match("^uk") then is_ukrainian = true end
+            end
+        end
+        local ui_lang = self.loc and self.loc:getLanguage() or ""
+        if tostring(ui_lang):lower():match("^uk") then
+            is_ukrainian = true
+        end
+
+        if not is_ukrainian then
+            local v30_expected = current_sig:gsub("^v31|", "v30|")
+            if signature == v30_expected then
+                sig_matches = true
+                log("loadUnitCache: Accepting legacy v30 cache for non-Ukrainian book.")
+            end
+        end
+    end
+
+    if not sig_matches then
         log("loadUnitCache: Cache settings signature mismatch. File: [" .. tostring(signature) .. "], Current settings: [" .. tostring(current_sig) .. "]. Ignoring.")
         f:close()
         return false
@@ -703,6 +733,17 @@ function M:scanBookForUnits(force)
     if not force and settings.unit_auto_scan_enabled == false then
         log("scanBookForUnits: skipped scan because unit_auto_scan_enabled is false.")
         return
+    end
+
+    if not force then
+        local ok_dev, Device = pcall(require, "device")
+        local is_k = ok_dev and Device and Device.isKindle and Device:isKindle()
+        local threshold = is_k and (65 * 1024) or (35 * 1024)
+        local is_low, avail_kb = xray_utils:isLowMemory(threshold)
+        if is_low then
+            log(string.format("scanBookForUnits: skipped auto scan because available memory is critically low (%d KB < %d KB)", avail_kb or 0, threshold))
+            return
+        end
     end
 
     -- Proactively cancel any running background AI processes to prioritize the unit scan
@@ -896,6 +937,7 @@ function M:scanBookForUnits(force)
             end
 
             log("scanBookForUnits: checkpoint A — pre findAllText digit")
+            collectgarbage("collect")
             progress_msg:reportProgress(15)
             local doc = self.ui.document
             local t0 = os.clock()
@@ -939,9 +981,11 @@ function M:scanBookForUnits(force)
             for _, h in ipairs(hits1) do
                 table.insert(hits, h)
             end
+            hits1 = nil
             for _, h in ipairs(hits2) do
                 table.insert(hits, h)
             end
+            hits2 = nil
 
             -- Deduplicate overlapping hits by end xpointer (keeps the longest match)
             local unique_hits = {}
@@ -952,12 +996,15 @@ function M:scanBookForUnits(force)
                     unique_hits[end_xp] = hit
                 end
             end
+            hits = nil
 
             local deduped_hits = {}
             for _, hit in pairs(unique_hits) do
                 table.insert(deduped_hits, hit)
             end
+            unique_hits = nil
             hits = deduped_hits
+            collectgarbage("step", 200)
 
             local t_start_lua = os.clock()
             log(string.format("scanBookForUnits: checkpoint E — dedup took %.2fs, %d hits", t_start_lua - t2, #hits))
@@ -1241,6 +1288,8 @@ function M:scanBookForUnits(force)
             end
 
             self.unit_xp_matches = xp_matches
+            hits = nil
+            collectgarbage("collect")
             local t3 = os.clock()
             log(string.format("scanBookForUnits: Lua processing took %.2fs, %d unit matches", t3 - t_start_lua, #xp_matches))
             log(string.format("scanBookForUnits: TOTAL %.2fs", t3 - t0))

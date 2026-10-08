@@ -522,6 +522,18 @@ function M:continueWithFetch(reading_percent, is_update, last_fetch_page, is_sil
         return
     end
 
+    if is_silent then
+        local is_low, avail_kb = utils:isLowMemory(30 * 1024)
+        if is_low then
+            self.bg_fetch_pending = false
+            local msg = string.format("XRayPlugin: Available memory is critically low (%d KB < 30 MB), skipping background fetch to prevent OOM", avail_kb or 0)
+            self:log(msg)
+            logger.warn(msg)
+            notifyComplete(false, "low_memory", msg)
+            return
+        end
+    end
+
     local has_active_request = self._active_ai_cancel
         or (self.ai_helper and self.ai_helper._async_child_pid)
     if is_silent and has_active_request then

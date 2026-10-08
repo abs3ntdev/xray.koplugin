@@ -9,6 +9,7 @@ if not ok_log then logger = { info = function() end, warn = function() end, erro
 local plugin_path = ((...) or ""):match("(.-)[^%.]+$") or ""
 local ok_xl, XRayLogger = pcall(require, plugin_path .. "xray_logger")
 local ok_xc, XRayConfig = pcall(require, plugin_path .. "xray_config")
+local utils = require(plugin_path .. "xray_utils")
 
 
 local XRayPlugin = (ok_wc and WidgetContainer and WidgetContainer.extend) and WidgetContainer:extend{
@@ -439,6 +440,10 @@ function XRayPlugin:onReaderReady()
         if self.mountUnderlineOverlay then self:mountUnderlineOverlay() end
         if self.mountTapHandler then self:mountTapHandler() end
         
+        -- Load cache immediately if available without doing a full scan
+        if self.loadUnitCache and settings.unit_converter_enabled ~= false then
+            pcall(function() self:loadUnitCache() end)
+        end
 
         local has_key = self.ai_helper and type(self.ai_helper.hasApiKey) == "function" and self.ai_helper:hasApiKey()
         if not has_key and settings.welcome_wizard_dont_ask ~= true then
@@ -449,11 +454,22 @@ function XRayPlugin:onReaderReady()
             if self.scanBookForUnits and settings.unit_converter_enabled ~= false then
                 local is_auto = settings.unit_auto_scan_enabled ~= false
                 if is_auto then
-                    if self.triggerBookTypeDetection then
-                        self:triggerBookTypeDetection()
-                    else
-                        self:scanBookForUnits()
-                    end
+                    -- Defer whole-book unit scanning by 20s so it doesn't collide with KOReader startup
+                    UIManager:scheduleIn(20, function()
+                        if self.destroyed or not self.ui or not self.ui.document then return end
+                        local ok_dev, Device = pcall(require, "device")
+                        local is_k = ok_dev and Device and Device.isKindle and Device:isKindle()
+                        local mem_threshold = is_k and (65 * 1024) or (35 * 1024)
+                        if utils:isLowMemory(mem_threshold) then
+                            self:log(string.format("XRayPlugin: Memory low (<%dMB), skipping automatic unit book scan", math.floor(mem_threshold / 1024)))
+                            return
+                        end
+                        if self.triggerBookTypeDetection then
+                            self:triggerBookTypeDetection()
+                        else
+                            self:scanBookForUnits()
+                        end
+                    end)
                 else
                     -- Auto-scan off: only restore underlines from an existing cache
                     self:scanBookForUnits()
@@ -479,8 +495,12 @@ function XRayPlugin:onReaderReady()
     local now = os.time()
     local week_seconds = 7 * 24 * 60 * 60
     if (now - last_check) > week_seconds then
-        UIManager:scheduleIn(10, function()
+        UIManager:scheduleIn(25, function()
             if self.destroyed or not self.ui or not self.ui.document then return end
+            if utils:isLowMemory(25 * 1024) then
+                self:log("XRayPlugin: Memory low, skipping weekly update check")
+                return
+            end
             self:checkWeeklyUpdate()
         end)
     end
@@ -512,8 +532,12 @@ function XRayPlugin:onReaderReady()
     end)
 
     if self.auto_fetch_enabled and settings.spoiler_setting == "full_book" then
-        UIManager:scheduleIn(5, function()
+        UIManager:scheduleIn(30, function()
             if self.destroyed or not self.ui or not self.ui.document then return end
+            if utils:isLowMemory(30 * 1024) then
+                self:log("XRayPlugin: Memory low, skipping startup catch-up fetch")
+                return
+            end
             if self:isCatchUpNeeded() and not self.bg_fetch_active and not self.bg_fetch_pending then
                 self.pending_background_fetch = true
                 self:scheduleBackgroundCatchUp(3)
@@ -1017,6 +1041,11 @@ function XRayPlugin:triggerBackgroundMergeFetch(chapter_title)
         local document = self.ui.document
         local target_limit, is_full_book = self:getCatchUpTargetLimit()
         if target_limit <= 0 then return end
+
+        if utils:isLowMemory(30 * 1024) then
+            self:log("XRayPlugin: Memory low (<30MB), skipping background catch-up batch")
+            return
+        end
 
         local last_fetch_page = self.book_data and self.book_data.last_fetch_page
         if last_fetch_page and last_fetch_page >= target_limit then
@@ -3214,6 +3243,17 @@ function XRayPlugin:triggerBookTypeDetection()
             and self.ai_helper:hasApiKey()
 
         if should_refine then
+            -- Avoid forking background AI processes concurrently while unit scanner is running or starting
+            if self._unit_scan_in_progress or not has_unit_cache then
+                UIManager:scheduleIn(15, function()
+                    if not self.destroyed and self.ui and self.ui.document and not self._unit_scan_in_progress then
+                        if self.triggerBookTypeDetection then
+                            self:triggerBookTypeDetection()
+                        end
+                    end
+                end)
+                return
+            end
             self._book_type_detecting = true
             local result_file = newBookTypeResultFile()
             local props = (self.ui and self.ui.document and self.ui.document.getProps and self.ui.document:getProps()) or {}
