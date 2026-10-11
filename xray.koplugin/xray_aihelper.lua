@@ -34,6 +34,13 @@ local XRayLogger = require(plugin_path .. "xray_logger")
 local Trapper = require("ui/trapper")
 local utils = require(plugin_path .. "xray_utils")
 
+-- Series index for prompts: 3 -> "3", 2.5 -> "2.5"
+local function formatSeriesIndex(index)
+    local n = tonumber(index) or 1
+    if n == math.floor(n) then return string.format("%d", n) end
+    return tostring(n)
+end
+
 -- Optimization: Use rapidjson if available
 local json_ok, json = pcall(require, "json")
 if not json_ok then
@@ -42,7 +49,7 @@ end
 
 -- Single source of truth for default AI models
 local DEFAULT_AI = {
-    primary   = { provider = "gemini", model = "gemini-3.7-flash" },
+    primary   = { provider = "gemini", model = "gemini-3.8-flash" },
     secondary = { provider = "gemini", model = "gemini-3.5-flash-lite" },
 }
 
@@ -2065,32 +2072,33 @@ function AIHelper:loadSettings()
     -- Migrate legacy / shut down Gemini model names to modern active equivalents
     local gemini_model_map = {
         -- 2.0 shut down models (shut down June 1, 2026 / Dec 2025)
-        ["gemini-2.0-flash"]                    = "gemini-3.7-flash",
-        ["gemini-2.0-flash-001"]                = "gemini-3.7-flash",
+        ["gemini-2.0-flash"]                    = "gemini-3.8-flash",
+        ["gemini-2.0-flash-001"]                = "gemini-3.8-flash",
         ["gemini-2.0-flash-lite"]               = "gemini-3.5-flash-lite",
         ["gemini-2.0-flash-lite-001"]           = "gemini-3.5-flash-lite",
         ["gemini-2.0-flash-lite-preview"]       = "gemini-3.5-flash-lite",
         ["gemini-2.0-flash-lite-preview-02-05"] = "gemini-3.5-flash-lite",
         -- 3.x preview / deprecated models
+        ["gemini-3.5-flash"]                    = "gemini-3.8-flash",
         ["gemini-3.1-flash-lite"]               = "gemini-3.5-flash-lite",
         ["gemini-3.1-flash-lite-preview"]       = "gemini-3.5-flash-lite",
-        ["gemini-3-flash-preview"]              = "gemini-3.7-flash",
+        ["gemini-3-flash-preview"]              = "gemini-3.8-flash",
         ["gemini-3-pro-preview"]                = "gemini-3.1-pro-preview",
         -- 2.5 models / previews
-        ["gemini-2.5-flash"]                    = "gemini-3.7-flash",
+        ["gemini-2.5-flash"]                    = "gemini-3.8-flash",
         ["gemini-2.5-flash-lite"]               = "gemini-3.5-flash-lite",
-        ["gemini-2.5-flash-preview-05-20"]      = "gemini-3.7-flash",
-        ["gemini-2.5-flash-preview-09-25"]      = "gemini-3.7-flash",
+        ["gemini-2.5-flash-preview-05-20"]      = "gemini-3.8-flash",
+        ["gemini-2.5-flash-preview-09-25"]      = "gemini-3.8-flash",
         ["gemini-2.5-flash-lite-preview-09-2025"] = "gemini-3.5-flash-lite",
         ["gemini-2.5-pro-preview-03-25"]        = "gemini-3.1-pro-preview",
         ["gemini-2.5-pro-preview-05-06"]        = "gemini-3.1-pro-preview",
         ["gemini-2.5-pro-preview-06-05"]        = "gemini-3.1-pro-preview",
         -- Legacy 1.5/1.0 models
-        ["gemini-1.5-flash"]                    = "gemini-3.7-flash",
-        ["gemini-1.5-flash-latest"]             = "gemini-3.7-flash",
+        ["gemini-1.5-flash"]                    = "gemini-3.8-flash",
+        ["gemini-1.5-flash-latest"]             = "gemini-3.8-flash",
         ["gemini-1.5-pro"]                      = "gemini-2.5-pro",
         ["gemini-1.5-pro-latest"]               = "gemini-2.5-pro",
-        ["gemini-1.0-pro"]                      = "gemini-3.7-flash",
+        ["gemini-1.0-pro"]                      = "gemini-3.8-flash",
     }
     local function migrate_gemini_model(ai_slot)
         if type(settings[ai_slot]) == "table" and settings[ai_slot].provider == "gemini" then
@@ -2530,15 +2538,22 @@ function AIHelper:createPrompt(title, author, context, section_name, targeted_wo
     elseif section_name == "series_detect" then
         success, final_prompt = pcall(string.format, template, enhanced_title, enhanced_author)
     elseif section_name == "prior_book_list" then
+        -- Series indices may be fractional (e.g. 2.5), which %d would truncate,
+        -- so the index placeholders are filled as strings.
         local idx = context and context.index or 1
-        success, final_prompt = pcall(string.format, template, context.series_name or "Unknown", idx, enhanced_title, enhanced_author, idx - 1)
+        local is_fractional = idx ~= math.floor(idx)
+        local last_whole = math.ceil(idx) - 1
+        success, final_prompt = pcall(string.format, template:gsub("%%d", "%%s"), context.series_name or "Unknown", formatSeriesIndex(idx), enhanced_title, enhanced_author, formatSeriesIndex(last_whole))
+        if is_fractional then
+            extra_context = extra_context .. "\n\nNOTE: This series numbers some entries with decimals (e.g. 1.5 for a novella or split volume). The current book is index " .. formatSeriesIndex(idx) .. ". List EVERY entry whose index is lower than " .. formatSeriesIndex(idx) .. ", including decimal-numbered ones, and give each entry's exact index as the series numbers it."
+        end
     elseif section_name == "series_book_summary" then
         local idx = context and context.index or 1
-        success, final_prompt = pcall(string.format, template, enhanced_title, enhanced_author, idx, context.series_name or "Unknown", idx)
+        success, final_prompt = pcall(string.format, template:gsub("%%d", "%%s"), enhanced_title, enhanced_author, formatSeriesIndex(idx), context.series_name or "Unknown", formatSeriesIndex(idx))
     elseif section_name == "local_timeline_summary" then
         local idx = context and context.index or 1
         local events_text = context and context.events_text or ""
-        success, final_prompt = pcall(string.format, template, enhanced_title, enhanced_author, idx, context.series_name or "Unknown", events_text)
+        success, final_prompt = pcall(string.format, template:gsub("%%d", "%%s"), enhanced_title, enhanced_author, formatSeriesIndex(idx), context.series_name or "Unknown", events_text)
     else
         success, final_prompt = pcall(string.format, template, enhanced_title, enhanced_author, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p)
     end
@@ -3555,8 +3570,8 @@ function AIHelper:validateProviderKey(provider_id)
             or (self.settings and self.settings.primary_ai and self.settings.primary_ai.provider == "gemini" and self.settings.primary_ai.model)
             or prov.primary_model
             or DEFAULT_AI.primary.model
-        if model == "gemini-2.5-flash" or model == "gemini-2.5-flash-lite" then
-            model = "gemini-3.7-flash"
+        if model == "gemini-2.5-flash" or model == "gemini-2.5-flash-lite" or model == "gemini-3.5-flash" then
+            model = "gemini-3.8-flash"
         end
         url = "https://generativelanguage.googleapis.com/v1beta/models/" .. model .. ":generateContent"
         headers = { ["Content-Type"] = "application/json", ["x-goog-api-key"] = key }
