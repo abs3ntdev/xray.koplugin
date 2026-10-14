@@ -856,6 +856,31 @@ describe("AIHelper", function()
             assert.are.equal("gemini-3.8-flash", AIHelper.settings.secondary_ai.model)
         end)
 
+        it("should migrate gemini-3.7-flash to gemini-3.8-flash", function()
+            local json = require("json")
+            local mock_settings = {
+                primary_ai = { provider = "gemini", model = "gemini-3.7-flash" },
+                gemini_primary_model = "gemini-3.7-flash",
+            }
+
+            local old_open = io.open
+            io.open = function(path, mode)
+                if path:find("settings.json") and (mode == "r" or mode == nil) then
+                    return {
+                        read = function() return json.encode(mock_settings) end,
+                        close = function() end
+                    }
+                end
+                return old_open(path, mode)
+            end
+
+            AIHelper:loadSettings()
+            io.open = old_open
+
+            assert.are.equal("gemini-3.8-flash", AIHelper.settings.primary_ai.model)
+            assert.are.equal("gemini-3.8-flash", AIHelper.settings.gemini_primary_model)
+        end)
+
         it("should migrate retired Claude models in primary_ai, secondary_ai, and claude_model", function()
             local json = require("json")
             local mock_settings = {
@@ -881,6 +906,31 @@ describe("AIHelper", function()
             assert.are.equal("claude-sonnet-5", AIHelper.settings.primary_ai.model)
             assert.are.equal("claude-haiku-4-5", AIHelper.settings.secondary_ai.model)
             assert.are.equal("claude-haiku-4-5", AIHelper.settings.claude_model)
+        end)
+
+        it("should migrate legacy DeepSeek models to deepseek-flash", function()
+            local json = require("json")
+            local mock_settings = {
+                primary_ai = { provider = "deepseek", model = "deepseek-v4-flash" },
+                secondary_ai = { provider = "deepseek", model = "deepseek-chat" },
+            }
+
+            local old_open = io.open
+            io.open = function(path, mode)
+                if path:find("settings.json") and (mode == "r" or mode == nil) then
+                    return {
+                        read = function() return json.encode(mock_settings) end,
+                        close = function() end
+                    }
+                end
+                return old_open(path, mode)
+            end
+
+            AIHelper:loadSettings()
+            io.open = old_open
+
+            assert.are.equal("deepseek-flash", AIHelper.settings.primary_ai.model)
+            assert.are.equal("deepseek-flash", AIHelper.settings.secondary_ai.model)
         end)
     end)
 
@@ -1064,6 +1114,38 @@ custom1_model = google/gemini-2.5-flash
             assert.is_true(res.ok)
             req = json.decode(captured_body)
             assert.are.equal("claude-sonnet-5", req.model)
+
+            -- Case 5: claude-sonnet-5.5 is respected
+            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-sonnet-5.5" }
+            res = AIHelper:validateProviderKey("claude")
+            assert.is_true(res.ok)
+            req = json.decode(captured_body)
+            assert.are.equal("claude-sonnet-5.5", req.model)
+
+            AIHelper.makeRequest = original_makeRequest
+        end)
+    end)
+
+    describe("DeepSeek key validation", function()
+        local json = require("json")
+
+        it("validates DeepSeek key with deepseek-flash fallback", function()
+            local original_makeRequest = AIHelper.makeRequest
+            local captured_url, captured_headers, captured_body
+            AIHelper.makeRequest = function(self, url, headers, body, connect_timeout, timeout)
+                captured_url = url
+                captured_headers = headers
+                captured_body = body
+                return true, 200, '{"choices":[{"message":{"content":"pong"}}]}'
+            end
+
+            AIHelper.providers.deepseek.api_key = "sk-deepseek-test"
+            AIHelper.providers.deepseek.model = nil
+
+            local res = AIHelper:validateProviderKey("deepseek")
+            assert.is_true(res.ok)
+            local req = json.decode(captured_body)
+            assert.are.equal("deepseek-flash", req.model)
 
             AIHelper.makeRequest = original_makeRequest
         end)

@@ -2051,9 +2051,10 @@ function AIHelper:loadSettings()
         migrated = true
     end
     
-    -- Migrate legacy DeepSeek model names to v4 API names (deprecated 2026-07-24)
+    -- Migrate legacy DeepSeek model names to active API names
     local deepseek_model_map = {
-        ["deepseek-chat"]     = "deepseek-v4-flash",
+        ["deepseek-chat"]     = "deepseek-flash",
+        ["deepseek-v4-flash"] = "deepseek-flash",
         ["deepseek-reasoner"] = "deepseek-v4-pro",
     }
     local function migrate_deepseek_model(ai_slot)
@@ -2079,6 +2080,7 @@ function AIHelper:loadSettings()
         ["gemini-2.0-flash-lite-preview"]       = "gemini-3.5-flash-lite",
         ["gemini-2.0-flash-lite-preview-02-05"] = "gemini-3.5-flash-lite",
         -- 3.x preview / deprecated models
+        ["gemini-3.7-flash"]                    = "gemini-3.8-flash",
         ["gemini-3.5-flash"]                    = "gemini-3.8-flash",
         ["gemini-3.1-flash-lite"]               = "gemini-3.5-flash-lite",
         ["gemini-3.1-flash-lite-preview"]       = "gemini-3.5-flash-lite",
@@ -3612,7 +3614,7 @@ function AIHelper:validateProviderKey(provider_id)
             headers["HTTP-Referer"] = "https://github.com/koreader/koreader-xray-plugin"
             headers["X-Title"] = "KOReader X-Ray"
         end
-        local model = prov.model or (provider_id == "deepseek" and "deepseek-chat" or "gpt-4o-mini")
+        local model = prov.model or (provider_id == "deepseek" and "deepseek-flash" or "gpt-4o-mini")
         request_body = json.encode({
             model = model,
             max_tokens = 5,

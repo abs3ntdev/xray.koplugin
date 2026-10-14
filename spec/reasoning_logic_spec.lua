@@ -162,7 +162,7 @@ describe("AI Reasoning Logic", function()
         end)
 
         it("should include thinking block for Claude and omit assistant prefill when reasoning is set", function()
-            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-3-7-sonnet" }
+            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-sonnet-5.5" }
             AIHelper.settings.reasoning_effort = "medium"
             
             local requests = AIHelper:buildComprehensiveRequest("Title", "Author", {})

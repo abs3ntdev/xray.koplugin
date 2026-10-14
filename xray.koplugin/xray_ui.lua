@@ -5965,7 +5965,6 @@ function M:getAIModelSelectionMenu(setting_type)
             display_name = "Gemini",
             models = {
                 { id = "gemini-3.8-flash", cost = "free" },
-                { id = "gemini-3.7-flash", cost = "free" },
                 { id = "gemini-3.6-flash", cost = "free" },
                 { id = "gemini-3.5-flash-lite", cost = "free" },
                 { id = "gemini-3.1-pro-preview", cost = "paid" },
@@ -5989,7 +5988,7 @@ function M:getAIModelSelectionMenu(setting_type)
             id = "deepseek",
             display_name = "DeepSeek",
             models = {
-                { id = "deepseek-v4-flash", cost = "paid" },
+                { id = "deepseek-flash", cost = "paid" },
                 { id = "deepseek-v4-pro", cost = "paid" },
             }
         },
@@ -5997,6 +5996,7 @@ function M:getAIModelSelectionMenu(setting_type)
             id = "claude",
             display_name = "Claude",
             models = {
+                { id = "claude-sonnet-5.5", cost = "paid" },
                 { id = "claude-sonnet-5", cost = "paid" },
                 { id = "claude-sonnet-4-6", cost = "paid" },
                 { id = "claude-haiku-4-5", cost = "paid" },

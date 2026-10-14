@@ -1332,21 +1332,24 @@ describe("xray_ui", function()
             assert.is_true(#menu_items > 0)
 
             -- Check for provider sub-menus
-            local gemini_item, chatgpt_item, claude_item
+            local gemini_item, chatgpt_item, claude_item, deepseek_item
             for _, item in ipairs(menu_items) do
                 if item.text and item.text:find("Gemini") then gemini_item = item end
                 if item.text and item.text:find("ChatGPT") then chatgpt_item = item end
                 if item.text and item.text:find("Claude") then claude_item = item end
+                if item.text and item.text:find("DeepSeek") then deepseek_item = item end
             end
 
             assert.is_not_nil(gemini_item)
             assert.is_not_nil(chatgpt_item)
             assert.is_not_nil(claude_item)
+            assert.is_not_nil(deepseek_item)
 
             local gemini_menu = gemini_item.sub_item_table_func()
             assert.is_not_nil(gemini_menu[1].text:find("gemini%-3%.8%-flash"))
-            assert.is_not_nil(gemini_menu[2].text:find("gemini%-3%.7%-flash"))
+            assert.is_not_nil(gemini_menu[2].text:find("gemini%-3%.6%-flash"))
             for _, item in ipairs(gemini_menu) do
+                assert.is_nil(item.text:match("gemini%-3%.7%-flash$"))
                 assert.is_nil(item.text:match("gemini%-3%.5%-flash$"))
             end
 
@@ -1365,8 +1368,12 @@ describe("xray_ui", function()
             assert.are.equal("chatgpt", selection[2])
             assert.are.equal("gpt-6-luna", selection[3])
 
+            local deepseek_menu = deepseek_item.sub_item_table_func()
+            assert.is_not_nil(deepseek_menu[1].text:find("deepseek%-flash"))
+
             local claude_menu = claude_item.sub_item_table_func()
-            assert.is_not_nil(claude_menu[1].text:find("claude%-sonnet%-5"))
+            assert.is_not_nil(claude_menu[1].text:find("claude%-sonnet%-5%.5"))
+            assert.is_not_nil(claude_menu[2].text:find("claude%-sonnet%-5"))
         end)
     end)
 
