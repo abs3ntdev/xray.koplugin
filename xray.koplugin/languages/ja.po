@@ -237,6 +237,10 @@ msgstr "設定されているすべてのAPIキーおよびカスタムエンド
 msgid "confirm_clear_single_key"
 msgstr "%s の設定済みAPIキーを削除しますか？"
 
+# en-hash: d3d2e617335f08df83599665eef8a418
+msgid "continue_in_background"
+msgstr "閉じる"
+
 # en-hash: 9cfefed8fb9497baa5cd519d7d2bb5d7
 msgid "current_language"
 msgstr "ja"
@@ -469,6 +473,22 @@ msgstr "予期しないエラーが発生しました: %s"
 msgid "error_unknown_title"
 msgstr "取得失敗"
 
+# en-hash: b9f5c797ebbf55adccdd8539a65a0241
+msgid "evolution_disabled"
+msgstr "無効"
+
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "evolution_enabled"
+msgstr "有効"
+
+# en-hash: a60a71af2508ebb8958b115204d602f8
+msgid "evolution_setting_desc"
+msgstr "エンティティの進化は、章やマイルストーンを通じてキャラクター、場所、用語がどのように変化するかを追跡します。\n\nこれを無効にすると、検索ポップアップや詳細ダイアログから「進化」ボタンが非表示になります。"
+
+# en-hash: 8a193135a3bc4b4998dfc09f31602b3f
+msgid "evolution_title"
+msgstr "進化"
+
 # en-hash: bd109e1437d54acaada2eb31eebd39d2
 msgid "extracting_more_characters"
 msgstr "キャラクターを追加抽出中..."
@@ -520,6 +540,30 @@ msgstr "全編モード"
 # en-hash: 224900ca5b99a949b6fe8a5c0360f5ff
 msgid "gemini_key_hint"
 msgstr "Google AI Studioの無料Geminiキーを入力 (AQ. または AIzaSy... で始まります):"
+
+# en-hash: e743adccf6972021e1bbf252702394d8
+msgid "highlight_menu_btn"
+msgstr "ハイライトメニュー"
+
+# en-hash: f850d33c4743163bf7e06b8fde0855a6
+msgid "horizon_1"
+msgstr "1章先まで"
+
+# en-hash: b93160631e7a4c86e26e599b133cf5ef
+msgid "horizon_2"
+msgstr "2章先まで"
+
+# en-hash: aef4a7c7b9ebcb82dca9ac6a8ebb0ba1
+msgid "horizon_3"
+msgstr "3章先まで"
+
+# en-hash: 08b431a0304ccf08e5e44cd9c5ef91b5
+msgid "horizon_5"
+msgstr "5章先まで"
+
+# en-hash: 0ebfde96e47052f9ce95f781fada228a
+msgid "horizon_off"
+msgstr "オフ (現在章のみ)"
 
 # en-hash: 33dca68e340b8d6c21472341130cf45a
 msgid "illustration"
@@ -917,6 +961,10 @@ msgstr "カスタムモデルを入力..."
 msgid "menu_entity_ui_mode"
 msgstr "エンティティ説明スタイル"
 
+# en-hash: 54c388986a89f527cc5cbdcde63a7c61
+msgid "menu_evolution_settings"
+msgstr "進化の設定"
+
 # en-hash: c1b19dc83bcbcf0c634af5164ac2f24f
 msgid "menu_fetch_author"
 msgstr "著者情報を取得"
@@ -984,6 +1032,14 @@ msgstr "クリップボードから %s キーを貼り付け"
 # en-hash: f3ab2ad220b458e8cd144bc464038505
 msgid "menu_popup_font_size"
 msgstr "ポップアップのフォントサイズ"
+
+# en-hash: 48a3995863adcc59ade43533a3a4f7ff
+msgid "menu_prefetch_horizon"
+msgstr "先読み範囲 (オフライン読書用)"
+
+# en-hash: 523ae7a3cffca13a26ef27ca7f45b5a3
+msgid "menu_pregenerate_book"
+msgstr "本全体を事前生成"
 
 # en-hash: f0e87a49b3cb82e4faabd5fc3729e8e8
 msgid "menu_primary_ai_model"
@@ -1169,6 +1225,10 @@ msgstr "APIキーが設定されていません！"
 msgid "no_author_data_fetch"
 msgstr "著者の経歴はありません。取得しますか？"
 
+# en-hash: 1f291814f41100bf065758282bfb1f3e
+msgid "no_chapters_found"
+msgstr "物語の章が見つかりませんでした。"
+
 # en-hash: 18b36cd276b2c5afa9f9cdf198876b20
 msgid "no_character_data"
 msgstr "キャラクターデータがありません。\n\n先に「X-Rayデータを取得」してください。"
@@ -1176,6 +1236,10 @@ msgstr "キャラクターデータがありません。\n\n先に「X-Rayデー
 # en-hash: 80a4905228688f8ad8ec996803f60ffb
 msgid "no_data_prompt"
 msgstr "この本のX-Rayデータが見つかりません。AIから取得しますか？"
+
+# en-hash: 8c918ead3a0aa5e6b949bf890bb25cb3
+msgid "no_document"
+msgstr "ドキュメントが開かれていません。"
 
 # en-hash: f66eabdf2cb216138e5c20cd3f9d890d
 msgid "no_duplicates_found"
@@ -1221,6 +1285,10 @@ msgstr "用語データがまだありません。先に「Fetch X-Ray Data」�
 msgid "no_timeline_data"
 msgstr "タイムラインデータがありません。\n\n先に「X-Rayデータを取得」してください。\n\nAIが主要なイベントを時系列順に\n表示します。"
 
+# en-hash: 5e629935d4d1f381d41aa5df7596bdd2
+msgid "no_toc_found"
+msgstr "目次が見つかりませんでした。"
+
 # en-hash: e0aa021e21dddbd6d8cecec71e9cf564
 msgid "ok"
 msgstr "OK"
@@ -1228,6 +1296,10 @@ msgstr "OK"
 # en-hash: 386b384e3eec6bf9bf55d32b5018de15
 msgid "pair_rejected"
 msgstr "ペアは重複なしとマークされました。"
+
+# en-hash: 98ba558bb9ff6031db51cfb88b0b7ca2
+msgid "past_evolution"
+msgstr "ストーリーアーク"
 
 # en-hash: b8d4677ac13de48defd22ae1a3fe2479
 msgid "paste_clipboard_confirm"
@@ -1289,6 +1361,30 @@ msgstr "小"
 msgid "popup_font_size_xlarge"
 msgstr "特大"
 
+# en-hash: 3a5b636cdae103a7041a4bd805a590b5
+msgid "prefetch_horizon_desc"
+msgstr "オンライン時に今後の章をバックグラウンドで事前生成します。到達するまでネタバレを防ぎます:"
+
+# en-hash: dca66de2b9060580aeee1ad0b51381ac
+msgid "pregenerate_confirm_text"
+msgstr "全%d章をバックグラウンドで順次スキャン・解析します。新しく発見されたキャラクターの状態、場所、用語は、到達するまでネタバレになりません。\n\n実行しますか？"
+
+# en-hash: 8474e54bad0a6acdfa4c577f3cce833b
+msgid "pregeneration_complete"
+msgstr "事前生成完了！"
+
+# en-hash: b81790e75b057df58035bbf6a562fdd9
+msgid "pregeneration_progress"
+msgstr "X-Rayを事前生成中: 第%d章 / %d章..."
+
+# en-hash: ce0e3b3cdea867bfaf5f6690cc447817
+msgid "pregeneration_started"
+msgstr "バックグラウンドで事前生成を開始しました。"
+
+# en-hash: 49c78fe423024d32c829cb336052531b
+msgid "pregeneration_stopped"
+msgstr "事前生成を停止しました。"
+
 # en-hash: 14230d11143a03f4330c6433d5032a9d
 msgid "prev"
 msgstr "前へ"
@@ -1336,6 +1432,10 @@ msgstr "この本のキャッシュされたすべての X-Ray データを破�
 # en-hash: 28d57012d4eada5bfcadc8447e1550ea
 msgid "rebuild_confirm_title"
 msgstr "X-Ray データの再構築"
+
+# en-hash: 63a6a88c066880c5ac42394a22803ca6
+msgid "refresh"
+msgstr "更新"
 
 # en-hash: d98ac12774fca5c3cbaffe276840c55f
 msgid "reject_pair"
@@ -1465,9 +1565,17 @@ msgstr "X-Rayのネタバレ設定を選択してください:"
 msgid "spoiler_preference_title"
 msgstr "ネタバレ設定"
 
+# en-hash: a6122a65eaa676f700ae68d393054a37
+msgid "start"
+msgstr "開始"
+
 # en-hash: 11a755d598c0c417f9a36758c3da7481
 msgid "stop"
 msgstr "停止"
+
+# en-hash: cb70e7496d2ead7064f09a1e145d1822
+msgid "stop_pregeneration"
+msgstr "事前生成を停止"
 
 # en-hash: d725036d492c380f06f4eb32f5704bc9
 msgid "term_not_found"
@@ -1933,9 +2041,17 @@ msgstr "X-RAYへようこそ"
 msgid "xray_disabled_label"
 msgstr "無効"
 
-# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
-msgid "xray_enabled_label"
-msgstr "有効"
+# en-hash: f985e0d7d99a942354d25b3ca82e2dbd
+msgid "xray_mode_about"
+msgstr "読書中のテキスト選択とX-Rayの統合方法を設定します:\n\n• [B]メニュー内にボタンを表示:[/B] KOReaderの辞書・ハイライトメニューに 'X-Ray' ボタンを追加します。\n• [B]ハイライト時に自動ポップアップ:[/B] X-Rayデータがある単語や名前を選択すると、ハイライトメニューをスキップして即座にX-Rayを開きます。データがない場合は通常のメニューが表示されます。ポップアップ内の 'ハイライトメニュー' ボタンから、いつでもハイライトや辞書検索が可能です。\n• [B]無効:[/B] テキスト内のX-Ray検索ボタンを非表示にします。"
+
+# en-hash: 9c80703132b544548dbcfcf70e216f38
+msgid "xray_mode_auto_popup_label"
+msgstr "ハイライト時に自動ポップアップ"
+
+# en-hash: eeb0673b42314cc5bb1f98be372c9eda
+msgid "xray_mode_button_label"
+msgstr "メニュー内にボタンを表示 (デフォルト)"
 
 # en-hash: aa3045baed0aad489f96655b14b671ac
 msgid "xray_mode_desc"
@@ -1945,7 +2061,11 @@ msgstr "辞書および選択メニューに「X-Ray」ボタンを追加し、�
 msgid "yes"
 msgstr "はい"
 
+
 # en-hash: d1591eafbd0b70a04df7b81673b81bfc
 msgid "menu_update_history"
 msgstr "更新履歴"
 
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "xray_enabled_label"
+msgstr "有効"

@@ -836,10 +836,11 @@ function ImageGallery:buildUI()
         series_images = p.series_manager:getSeriesImages(series_slug, max_idx) or {}
     end
 
-    local current_book_page = nil
-    if p.ui and p.ui.document and p.ui.document.getCurrentPage then
-        current_book_page = p.ui.document:getCurrentPage()
-    end
+    local book_path = (p.ui and p.ui.document and p.ui.document.file) or (p.book_data and p.book_data.book_path)
+    local current_book_page = (p.getCurrentPage and p:getCurrentPage())
+        or (p.ui and p.ui.getCurrentPage and p.ui:getCurrentPage())
+        or (p.ui and p.ui.document and p.ui.document.getCurrentPage and p.ui.document:getCurrentPage())
+        or 1
 
     local filtered = p.image_manager:getFilteredImages(p.images or {}, self.tab, current_book_page, self.filter_mode, series_images)
 
@@ -1223,7 +1224,8 @@ function ImageGallery:buildUI()
                     img.aspect_ratio = aspect_ratio
                 else
                     local local_file = img.cached_file
-                    if not local_file and book_path and not img.is_spoiler then
+                    local is_spoiler_locked = img.is_spoiler and not img.spoiler_revealed and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.spoiler_setting ~= "full_book" and p.ai_helper.settings.no_spoilers ~= false
+                    if not local_file and book_path and not is_spoiler_locked then
                         local_file = p.image_manager:extractImageToFile(book_path, img)
                     end
                     if local_file then
@@ -1598,8 +1600,10 @@ function ImageGallery:renderMosaicCard(img, cell_w, is_focused_or_idx, opt_idx)
 
     local thumb_w = cell_w
 
+    local is_spoiler_locked = img.is_spoiler and not img.spoiler_revealed and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.spoiler_setting ~= "full_book" and p.ai_helper.settings.no_spoilers ~= false
+
     local local_file = img.cached_file
-    if not local_file and book_path and not img.is_spoiler then
+    if not local_file and book_path and not is_spoiler_locked then
         local_file = p.image_manager:extractImageToFile(book_path, img)
     end
 
@@ -1626,7 +1630,7 @@ function ImageGallery:renderMosaicCard(img, cell_w, is_focused_or_idx, opt_idx)
 
     local image_widget = nil
 
-    if img.is_spoiler and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.no_spoilers ~= false then
+    if is_spoiler_locked then
         local lock_icon = ImageWidget:new{
             file = getAssetPath("lock.svg"),
             width = sc(24),
@@ -1847,13 +1851,15 @@ function ImageGallery:renderGridCard(img, cell_w, is_focused_or_idx, opt_idx)
     local img_h = inner_w
     local card_h = img_h + sc(36)
 
+    local is_spoiler_locked = img.is_spoiler and not img.spoiler_revealed and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.spoiler_setting ~= "full_book" and p.ai_helper.settings.no_spoilers ~= false
+
     local local_file = img.cached_file
-    if not local_file and book_path and not img.is_spoiler then
+    if not local_file and book_path and not is_spoiler_locked then
         local_file = p.image_manager:extractImageToFile(book_path, img)
     end
 
     local img_widget = nil
-    if img.is_spoiler and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.no_spoilers ~= false then
+    if is_spoiler_locked then
         img_widget = CenterContainer:new{
             dimen = Geom:new{ w = inner_w, h = img_h },
             VerticalGroup:new{
@@ -2089,13 +2095,15 @@ function ImageGallery:renderListRow(img, content_w, is_focused_or_idx, opt_idx)
     local pad_h = sc(12)
     local inner_w = content_w - (pad_h * 2)
 
+    local is_spoiler_locked = img.is_spoiler and not img.spoiler_revealed and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.spoiler_setting ~= "full_book" and p.ai_helper.settings.no_spoilers ~= false
+
     local local_file = img.cached_file
-    if not local_file and book_path and not img.is_spoiler then
+    if not local_file and book_path and not is_spoiler_locked then
         local_file = p.image_manager:extractImageToFile(book_path, img)
     end
 
     local thumb_widget = nil
-    if img.is_spoiler and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.no_spoilers ~= false then
+    if is_spoiler_locked then
         thumb_widget = CenterContainer:new{
             dimen = Geom:new{ w = thumb_w, h = thumb_h },
             ImageWidget:new{

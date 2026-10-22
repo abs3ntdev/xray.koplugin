@@ -237,6 +237,10 @@ msgstr "确定要清除所有已配置的 API 密钥和自定义接口吗？\n\n
 msgid "confirm_clear_single_key"
 msgstr "确定要清除 %s 的已配置 API 密钥吗？"
 
+# en-hash: d3d2e617335f08df83599665eef8a418
+msgid "continue_in_background"
+msgstr "关闭"
+
 # en-hash: 9cfefed8fb9497baa5cd519d7d2bb5d7
 msgid "current_language"
 msgstr "zh_CN"
@@ -469,6 +473,22 @@ msgstr "发生了一个意外错误：%s"
 msgid "error_unknown_title"
 msgstr "获取失败"
 
+# en-hash: b9f5c797ebbf55adccdd8539a65a0241
+msgid "evolution_disabled"
+msgstr "已禁用"
+
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "evolution_enabled"
+msgstr "已启用"
+
+# en-hash: a60a71af2508ebb8958b115204d602f8
+msgid "evolution_setting_desc"
+msgstr "实体演进功能追踪角色、地点和术语在各章节及里程碑中的变化。\n\n禁用此功能将隐藏查找弹窗和详情对话框中的“演进”按钮。"
+
+# en-hash: 8a193135a3bc4b4998dfc09f31602b3f
+msgid "evolution_title"
+msgstr "演变"
+
 # en-hash: bd109e1437d54acaada2eb31eebd39d2
 msgid "extracting_more_characters"
 msgstr "正在提取更多角色..."
@@ -520,6 +540,30 @@ msgstr "整本书模式"
 # en-hash: 224900ca5b99a949b6fe8a5c0360f5ff
 msgid "gemini_key_hint"
 msgstr "输入 Google AI Studio 免费获取的 Gemini 密钥（以 AQ. 或 AIzaSy... 开头）："
+
+# en-hash: e743adccf6972021e1bbf252702394d8
+msgid "highlight_menu_btn"
+msgstr "高亮菜单"
+
+# en-hash: f850d33c4743163bf7e06b8fde0855a6
+msgid "horizon_1"
+msgstr "提前 1 章"
+
+# en-hash: b93160631e7a4c86e26e599b133cf5ef
+msgid "horizon_2"
+msgstr "提前 2 章"
+
+# en-hash: aef4a7c7b9ebcb82dca9ac6a8ebb0ba1
+msgid "horizon_3"
+msgstr "提前 3 章"
+
+# en-hash: 08b431a0304ccf08e5e44cd9c5ef91b5
+msgid "horizon_5"
+msgstr "提前 5 章"
+
+# en-hash: 0ebfde96e47052f9ce95f781fada228a
+msgid "horizon_off"
+msgstr "关闭（仅当前章节）"
 
 # en-hash: 33dca68e340b8d6c21472341130cf45a
 msgid "illustration"
@@ -917,6 +961,10 @@ msgstr "输入自定义模型..."
 msgid "menu_entity_ui_mode"
 msgstr "实体描述显示样式"
 
+# en-hash: 54c388986a89f527cc5cbdcde63a7c61
+msgid "menu_evolution_settings"
+msgstr "演进设置"
+
 # en-hash: c1b19dc83bcbcf0c634af5164ac2f24f
 msgid "menu_fetch_author"
 msgstr "获取作者信息 (AI)"
@@ -984,6 +1032,14 @@ msgstr "从剪贴板粘贴 %s 密钥"
 # en-hash: f3ab2ad220b458e8cd144bc464038505
 msgid "menu_popup_font_size"
 msgstr "弹出窗口字号"
+
+# en-hash: 48a3995863adcc59ade43533a3a4f7ff
+msgid "menu_prefetch_horizon"
+msgstr "预取范围（离线阅读）"
+
+# en-hash: 523ae7a3cffca13a26ef27ca7f45b5a3
+msgid "menu_pregenerate_book"
+msgstr "预生成整书"
 
 # en-hash: f0e87a49b3cb82e4faabd5fc3729e8e8
 msgid "menu_primary_ai_model"
@@ -1169,6 +1225,10 @@ msgstr "未设置 AI API 密钥！\n\n请在以下路径输入密钥：\n菜单 
 msgid "no_author_data_fetch"
 msgstr "暂无作者信息。\n\n是否要通过 AI 获取？"
 
+# en-hash: 1f291814f41100bf065758282bfb1f3e
+msgid "no_chapters_found"
+msgstr "未找到叙事章节。"
+
 # en-hash: 18b36cd276b2c5afa9f9cdf198876b20
 msgid "no_character_data"
 msgstr "未找到角色。"
@@ -1176,6 +1236,10 @@ msgstr "未找到角色。"
 # en-hash: 80a4905228688f8ad8ec996803f60ffb
 msgid "no_data_prompt"
 msgstr "未找到此书的 X-Ray 数据。是否现在通过 AI 获取？"
+
+# en-hash: 8c918ead3a0aa5e6b949bf890bb25cb3
+msgid "no_document"
+msgstr "未打开文档。"
 
 # en-hash: f66eabdf2cb216138e5c20cd3f9d890d
 msgid "no_duplicates_found"
@@ -1221,6 +1285,10 @@ msgstr "暂无词条数据。请先使用“Fetch X-Ray Data”。"
 msgid "no_timeline_data"
 msgstr "暂无时间线数据。\n\n请先使用“获取 X-Ray 数据”。\n\nAI 将按时间顺序显示关键事件。"
 
+# en-hash: 5e629935d4d1f381d41aa5df7596bdd2
+msgid "no_toc_found"
+msgstr "文档中未找到目录。"
+
 # en-hash: e0aa021e21dddbd6d8cecec71e9cf564
 msgid "ok"
 msgstr "确定"
@@ -1228,6 +1296,10 @@ msgstr "确定"
 # en-hash: 386b384e3eec6bf9bf55d32b5018de15
 msgid "pair_rejected"
 msgstr "已标记此配对不是重复项。"
+
+# en-hash: 98ba558bb9ff6031db51cfb88b0b7ca2
+msgid "past_evolution"
+msgstr "故事线"
 
 # en-hash: b8d4677ac13de48defd22ae1a3fe2479
 msgid "paste_clipboard_confirm"
@@ -1289,6 +1361,30 @@ msgstr "小"
 msgid "popup_font_size_xlarge"
 msgstr "特大"
 
+# en-hash: 3a5b636cdae103a7041a4bd805a590b5
+msgid "prefetch_horizon_desc"
+msgstr "在线时在后台预生成后续章节，在您读到前保持剧透信息隐藏："
+
+# en-hash: dca66de2b9060580aeee1ad0b51381ac
+msgid "pregenerate_confirm_text"
+msgstr "此操作将在后台依次扫描并分析全部 %d 个章节。新发现的角色状态、地点和词汇表项在您读到前将保持隐藏，避免剧透。\n\n是否继续？"
+
+# en-hash: 8474e54bad0a6acdfa4c577f3cce833b
+msgid "pregeneration_complete"
+msgstr "预生成完成！"
+
+# en-hash: b81790e75b057df58035bbf6a562fdd9
+msgid "pregeneration_progress"
+msgstr "正在预生成 X-Ray：第 %d 章，共 %d 章..."
+
+# en-hash: ce0e3b3cdea867bfaf5f6690cc447817
+msgid "pregeneration_started"
+msgstr "已在后台开始预生成。"
+
+# en-hash: 49c78fe423024d32c829cb336052531b
+msgid "pregeneration_stopped"
+msgstr "预生成已停止。"
+
 # en-hash: 14230d11143a03f4330c6433d5032a9d
 msgid "prev"
 msgstr "上一页"
@@ -1336,6 +1432,10 @@ msgstr "这将清除此书所有缓存的 X-Ray 数据，并从 AI 获取最新�
 # en-hash: 28d57012d4eada5bfcadc8447e1550ea
 msgid "rebuild_confirm_title"
 msgstr "重建 X-Ray 数据"
+
+# en-hash: 63a6a88c066880c5ac42394a22803ca6
+msgid "refresh"
+msgstr "刷新"
 
 # en-hash: d98ac12774fca5c3cbaffe276840c55f
 msgid "reject_pair"
@@ -1465,9 +1565,17 @@ msgstr "选择 X-Ray 数据的剧透偏好："
 msgid "spoiler_preference_title"
 msgstr "剧透偏好"
 
+# en-hash: a6122a65eaa676f700ae68d393054a37
+msgid "start"
+msgstr "开始"
+
 # en-hash: 11a755d598c0c417f9a36758c3da7481
 msgid "stop"
 msgstr "停止"
+
+# en-hash: cb70e7496d2ead7064f09a1e145d1822
+msgid "stop_pregeneration"
+msgstr "停止预生成"
 
 # en-hash: d725036d492c380f06f4eb32f5704bc9
 msgid "term_not_found"
@@ -1933,9 +2041,17 @@ msgstr "欢迎使用 X-RAY"
 msgid "xray_disabled_label"
 msgstr "已禁用"
 
-# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
-msgid "xray_enabled_label"
-msgstr "已启用"
+# en-hash: f985e0d7d99a942354d25b3ca82e2dbd
+msgid "xray_mode_about"
+msgstr "控制阅读时划词或选择文本与 X-Ray 的联动方式：\n\n• [B]菜单按钮：[/B]在 KOReader 词典和划词菜单中添加“X-Ray”按钮。\n• [B]划词即弹 X-Ray：[/B]当选择包含 X-Ray 数据的词语或角色名时，跳过划词菜单直接弹出 X-Ray 窗口。若无匹配数据，则显示常规菜单。可在弹窗内随时点击“高亮菜单”进行常规划线高亮或查词典。\n• [B]停用：[/B]隐藏文中选词的 X-Ray 按钮。"
+
+# en-hash: 9c80703132b544548dbcfcf70e216f38
+msgid "xray_mode_auto_popup_label"
+msgstr "划词即弹 X-Ray"
+
+# en-hash: eeb0673b42314cc5bb1f98be372c9eda
+msgid "xray_mode_button_label"
+msgstr "菜单按钮 (默认)"
 
 # en-hash: aa3045baed0aad489f96655b14b671ac
 msgid "xray_mode_desc"
@@ -1945,7 +2061,11 @@ msgstr "在字典和选择菜单中添加“X-Ray”按钮，实现即时查询�
 msgid "yes"
 msgstr "是"
 
+
 # en-hash: d1591eafbd0b70a04df7b81673b81bfc
 msgid "menu_update_history"
 msgstr "更新历史"
 
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "xray_enabled_label"
+msgstr "已启用"

@@ -685,7 +685,17 @@ def sync():
                 "web_setup_msg": "1. Подключите телефон/ПК к той же сети Wi-Fi.\n2. Отсканируйте этот QR-код или перейдите по адресу:\n\n%s\n\n3. Вставьте ключ API и нажмите Сохранить.",
                 "web_setup_no_wifi": "Wi-Fi отключен. Подключитесь к Wi-Fi для веб-настройки.",
                 "web_setup_success": "Ключ API для %s получен и сохранен!",
-                "web_setup_title": "Подключение через телефон / ПК"
+                "web_setup_title": "Подключение через телефон / ПК",
+                "highlight_menu_btn": "Меню выделения",
+                "xray_mode_button_label": "Кнопка в меню (по умолчанию)",
+                "xray_mode_auto_popup_label": "Авто-всплывание при выделении",
+                "xray_mode_about": "Управляет интеграцией X-Ray с выделением текста при чтении:\n\n• [B]Кнопка в меню:[/B] добавляет кнопку «X-Ray» в словарь и меню выделения KOReader.\n• [B]Авто-всплывание при выделении:[/B] мгновенно открывает X-Ray при выборе слова или имени с данными X-Ray, пропуская меню выделения. Если данных нет, открывается обычное меню. Используйте кнопку «Меню выделения» в окне для перехода к выделению или словарю.\n• [B]Отключено:[/B] скрывает кнопки поиска X-Ray в тексте."
+        },
+        "sk": {
+                "highlight_menu_btn": "Ponuka zvýraznenia",
+                "xray_mode_button_label": "Tlačidlo v ponuke (predvolené)",
+                "xray_mode_auto_popup_label": "Automatické vyskakovacie okno pri zvýraznení",
+                "xray_mode_about": "Riadi integráciu X-Ray s výberom textu pri čítaní:\n\n• [B]Tlačidlo v ponuke:[/B] Pridá tlačidlo „X-Ray“ do slovníka a ponuky zvýraznenia KOReaderu.\n• [B]Automatické vyskakovacie okno pri zvýraznení:[/B] Okamžite otvorí X-Ray, keď vyberiete slovo alebo meno s údajmi X-Ray, čím preskočí ponuku zvýraznenia. Ak sa žiadne údaje nezhodujú, zobrazí sa bežná ponuka. Tlačidlo „Ponuka zvýraznenia“ v okne môžete kedykoľvek použiť na zvýraznenie alebo vyhľadanie v slovníku.\n• [B]Zakázané:[/B] Skryje tlačidlá vyhľadávania X-Ray v texte."
         },
         "sr": {
                 "unit_scanning_book": "Скенирање књиге за јединице...",
@@ -707,7 +717,11 @@ def sync():
                 "web_setup_msg": "1. Повежите телефон/рачунар на исти Wi-Fi.\n2. Скенирајте овај QR код или посетите:\n\n%s\n\n3. Налепите API кључ и додирните Сачувај.",
                 "web_setup_no_wifi": "Wi-Fi је искључен. Повежите се на Wi-Fi да бисте користили веб подешавање.",
                 "web_setup_success": "API кључ за %s је примљен и сачуван!",
-                "web_setup_title": "Повезивање преко телефона / рачунара"
+                "web_setup_title": "Повезивање преко телефона / рачунара",
+                "highlight_menu_btn": "Мени истицања",
+                "xray_mode_button_label": "Дугме у менију (подразумевано)",
+                "xray_mode_auto_popup_label": "Аутоматски искачући прозор при истицању",
+                "xray_mode_about": "Контролише интеграцију X-Ray функције са избором текста током читања:\n\n• [B]Дугме у менију:[/B] Додаје дугме „X-Ray“ у речник и мени истицања KOReader-а.\n• [B]Аутоматски искачући прозор при истицању:[/B] Одмах отвара X-Ray када изаберете реч или име које има X-Ray податке, прескачући мени истицања. Ако подаци не постоје, приказује се обичан мени. Дугме „Мени истицања“ у прозору можете користити за претрагу речника или истицање.\n• [B]Онемогућено:[/B] Скрива дугмад за X-Ray у тексту."
         },
         "tr": {
                 "unit_scanning_book": "Kitap birimler için taranıyor...",
@@ -729,7 +743,11 @@ def sync():
                 "web_setup_msg": "1. Telefonunuzu/PC'nizi aynı Wi-Fi ağına bağlayın.\n2. Bu QR kodunu tarayın veya şu adrese gidin:\n\n%s\n\n3. API anahtarınızı yapıştırıp Kaydet'e dokunun.",
                 "web_setup_no_wifi": "Wi-Fi bağlantısı kesildi. Web kurulumunu kullanmak için lütfen Wi-Fi'ye bağlanın.",
                 "web_setup_success": "%s için API anahtarı alındı ve kaydedildi!",
-                "web_setup_title": "Telefon / PC ile Bağlan"
+                "web_setup_title": "Telefon / PC ile Bağlan",
+                "highlight_menu_btn": "Vurgulama Menüsü",
+                "xray_mode_button_label": "Menüde Düğme (Varsayılan)",
+                "xray_mode_auto_popup_label": "Vurgulamada Otomatik Açılır Pencere",
+                "xray_mode_about": "Okuma sırasında X-Ray'in metin seçimiyle nasıl entegre olacağını kontrol eder:\n\n• [B]Menüde Düğme:[/B] KOReader'ın sözlük ve vurgulama menülerine bir 'X-Ray' düğmesi ekler.\n• [B]Vurgulamada Otomatik Açılır Pencere:[/B] X-Ray verisi olan bir kelime veya isim seçtiğinizde vurgulama menüsünü atlayarak hemen X-Ray penceresini açar. Eşleşen veri yoksa normal menü gösterilir. Sözlükte aramak veya vurgulamak için pencere içindeki 'Vurgulama Menüsü' düğmesini dilediğiniz zaman kullanabilirsiniz.\n• [B]Devre Dışı:[/B] Metin içi X-Ray arama düğmelerini gizler."
         },
         "uk": {
                 "unit_scanning_book": "Сканування книги на наявність одиниць...",
@@ -751,7 +769,11 @@ def sync():
                 "web_setup_msg": "1. Підключіть телефон/ПК до тієї ж мережі Wi-Fi.\n2. Відскануйте цей QR-код або перейдіть за адресою:\n\n%s\n\n3. Вставте ключ API та натисніть Зберегти.",
                 "web_setup_no_wifi": "Wi-Fi вимкнено. Будь ласка, підключіться до Wi-Fi для веб-налаштування.",
                 "web_setup_success": "Ключ API для %s отримано та збережено!",
-                "web_setup_title": "Підключення через телефон / ПК"
+                "web_setup_title": "Підключення через телефон / ПК",
+                "highlight_menu_btn": "Меню виділення",
+                "xray_mode_button_label": "Кнопка в меню (типово)",
+                "xray_mode_auto_popup_label": "Авто-виринання при виділенні",
+                "xray_mode_about": "Керує інтеграцією X-Ray із виділенням тексту під час читання:\n\n• [B]Кнопка в меню:[/B] додає кнопку «X-Ray» до словника та меню виділення KOReader.\n• [B]Авто-виринання при виділенні:[/B] миттєво відкриває X-Ray при виборі слова або імені з даними X-Ray, оминаючи меню виділення. Якщо даних немає, відкривається звичайне меню. Використовуйте кнопку «Меню виділення» у вікні для переходу до виділення або словника.\n• [B]Вимкнено:[/B] приховує кнопки пошуку X-Ray у тексті."
         },
         "zh_CN": {
                 "unit_scanning_book": "正在扫描图书中的单位...",
@@ -792,7 +814,11 @@ def sync():
                 "stop": "停止",
                 "unit_action_configure": "配置设置...",
                 "unit_action_disable": "停用功能",
-                "unit_action_keep": "保持启用 (默认)"
+                "unit_action_keep": "保持启用 (默认)",
+                "highlight_menu_btn": "高亮菜单",
+                "xray_mode_button_label": "菜单按钮 (默认)",
+                "xray_mode_auto_popup_label": "划词即弹 X-Ray",
+                "xray_mode_about": "控制阅读时划词或选择文本与 X-Ray 的联动方式：\n\n• [B]菜单按钮：[/B]在 KOReader 词典和划词菜单中添加“X-Ray”按钮。\n• [B]划词即弹 X-Ray：[/B]当选择包含 X-Ray 数据的词语或角色名时，跳过划词菜单直接弹出 X-Ray 窗口。若无匹配数据，则显示常规菜单。可在弹窗内随时点击“高亮菜单”进行常规划线高亮或查词典。\n• [B]停用：[/B]隐藏文中选词的 X-Ray 按钮。"
         }
 }
     for lang_code, keys in list(all_untranslated.items()):

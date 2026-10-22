@@ -1,5 +1,6 @@
 -- X-Ray UI and Menu Functions
 local util = require("util")
+local logger = require("logger")
 
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
@@ -28,6 +29,16 @@ local xray_units = require(plugin_path .. "xray_units")
 local XRaySettingsCard = require(plugin_path .. "xray_settings_card")
 local utils = require(plugin_path .. "xray_utils")
 local SeriesManager = require(plugin_path .. "xray_seriesmanager")
+
+local function bookHasEntities(b, sm)
+    if not b or type(b) ~= "table" then return false end
+    if sm and sm.hasBookEntities then return sm.hasBookEntities(b) end
+    if SeriesManager and SeriesManager.hasBookEntities then return SeriesManager.hasBookEntities(b) end
+    return ((b.characters and #b.characters > 0) or
+            (b.locations and #b.locations > 0) or
+            (b.terms and #b.terms > 0) or
+            (b.timeline and #b.timeline > 0)) and true or false
+end
 
 local M = {}
 
@@ -137,6 +148,31 @@ local function _getPopupFontSize(plugin)
         return Screen:scaleBySize(22)
     end
     return 22
+end
+
+local function formatDialogButtons(action_btns, close_btn, top_btn)
+    local all_btns = {}
+    for _, btn in ipairs(action_btns or {}) do
+        table.insert(all_btns, btn)
+    end
+    table.insert(all_btns, close_btn)
+
+    local rows = {}
+    if top_btn then
+        table.insert(rows, { top_btn })
+    end
+
+    local i = 1
+    while i <= #all_btns do
+        if i + 1 <= #all_btns then
+            table.insert(rows, { all_btns[i], all_btns[i + 1] })
+            i = i + 2
+        else
+            table.insert(rows, { all_btns[i] })
+            i = i + 1
+        end
+    end
+    return rows
 end
 
 function M:calculatePopupFontMetrics(entity_or_text, opts)
@@ -346,13 +382,13 @@ function XRayBottomPopup:_buildContent()
     local btn_padding_h   = (Size.padding and Size.padding.large) or 12
     local btn_padding_v   = (Size.padding and Size.padding.small) or 4
 
-    local function make_btn(label, cb, is_focused)
+    local function make_btn(label, cb, is_focused, custom_fs, custom_pad_h)
         return Button:new{
             text            = label,
             text_font_face  = "cfont",
-            text_font_size  = fs_btn,
+            text_font_size  = custom_fs or fs_btn,
             text_font_bold  = true,
-            padding_h       = btn_padding_h,
+            padding_h       = custom_pad_h or btn_padding_h,
             padding_v       = btn_padding_v,
             margin          = 0,
             radius          = 4,
@@ -478,6 +514,22 @@ function XRayBottomPopup:_buildContent()
         })
     end
 
+    -- Past Evolution button
+    local evolution_enabled = plugin and plugin.ai_helper and plugin.ai_helper.settings and plugin.ai_helper.settings.evolution_enabled ~= false
+    local has_evo = evolution_enabled and (((plugin and plugin.hasEntityEvolution) and plugin:hasEntityEvolution(e))
+                    or (e.states and #e.states > 1) or (e.history and #e.history > 1))
+    if has_evo and plugin and plugin.showPastEvolution then
+        table.insert(raw_button_defs, {
+            label = get_loc_t("past_evolution", "Story Arc"),
+            cb = function()
+                UIManager:close(self)
+                UIManager:nextTick(function()
+                    plugin:showPastEvolution(e)
+                end)
+            end,
+        })
+    end
+
     -- B. Linked Entries button
     if #related > 0 and not e.is_conversion then
         table.insert(raw_button_defs, {
@@ -507,6 +559,17 @@ function XRayBottomPopup:_buildContent()
         })
     end
 
+    -- D. Highlight Menu button (when opened via auto-popup)
+    if self.restore_menu_cb then
+        table.insert(raw_button_defs, {
+            label = get_loc_t("highlight_menu_btn", "Highlight Menu"),
+            cb = function()
+                UIManager:close(self)
+                self.restore_menu_cb()
+            end,
+        })
+    end
+
     if #raw_button_defs > 0 then
         if self.focused_btn_index > #raw_button_defs then self.focused_btn_index = #raw_button_defs end
         if self.focused_btn_index < 1 then self.focused_btn_index = 1 end
@@ -515,10 +578,15 @@ function XRayBottomPopup:_buildContent()
     end
 
     self.active_button_defs = raw_button_defs
+    local is_multi_btn = (#raw_button_defs >= 3)
+    local cur_fs_btn = is_multi_btn and math.max(12, math.min(14, fs_btn - 2)) or fs_btn
+    local cur_pad_h = is_multi_btn and 8 or btn_padding_h
+    local span_w = is_multi_btn and math.max(8, gap) or math.max(12, gap * 2)
+
     local active_btns = {}
     for idx, bdef in ipairs(raw_button_defs) do
         local is_focused = (idx == self.focused_btn_index)
-        local btn = make_btn(bdef.label, bdef.cb, is_focused)
+        local btn = make_btn(bdef.label, bdef.cb, is_focused, cur_fs_btn, cur_pad_h)
         table.insert(active_btns, btn)
     end
 
@@ -526,9 +594,14 @@ function XRayBottomPopup:_buildContent()
     local btn_row
     if #active_btns > 0 then
         local row_h = 0
+        local total_btns_w = 0
         for _, btn in ipairs(active_btns) do
-            row_h = math.max(row_h, btn:getSize().h)
+            local sz = btn:getSize()
+            row_h = math.max(row_h, sz.h)
+            total_btns_w = total_btns_w + sz.w
         end
+        total_btns_w = total_btns_w + (#active_btns - 1) * span_w
+
         if #active_btns == 1 then
             btn_row = LeftContainer:new{
                 dimen = Geom:new{ w = inner_w, h = row_h },
@@ -541,11 +614,39 @@ function XRayBottomPopup:_buildContent()
                 HorizontalSpan:new{ width = math.max(16, gap * 3) },
                 active_btns[2],
             }
+        elseif total_btns_w > inner_w and #active_btns > 2 then
+            -- Multi-row wrap with uniform column widths (2 columns per row)
+            local col_w = math.floor((inner_w - span_w) / 2)
+            for _, btn in ipairs(active_btns) do
+                btn.width = col_w
+            end
+
+            local rows = {}
+            local current_row = nil
+            for i, btn in ipairs(active_btns) do
+                if (i % 2) == 1 then
+                    current_row = { align = "center" }
+                    table.insert(rows, current_row)
+                    table.insert(current_row, btn)
+                else
+                    table.insert(current_row, HorizontalSpan:new{ width = span_w })
+                    table.insert(current_row, btn)
+                end
+            end
+
+            local vg_rows = { align = "center" }
+            for r_idx, r in ipairs(rows) do
+                if r_idx > 1 then
+                    table.insert(vg_rows, VerticalSpan:new{ width = math.max(6, gap) })
+                end
+                table.insert(vg_rows, HorizontalGroup:new(r))
+            end
+            btn_row = VerticalGroup:new(vg_rows)
         else
             local btn_components = { align = "center" }
             for i, btn in ipairs(active_btns) do
                 if i > 1 then
-                    table.insert(btn_components, HorizontalSpan:new{ width = math.max(12, gap * 2) })
+                    table.insert(btn_components, HorizontalSpan:new{ width = span_w })
                 end
                 table.insert(btn_components, btn)
             end
@@ -683,7 +784,7 @@ function XRayBottomPopup:onCloseWidget()
     UIManager:setDirty(nil, "ui")
 end
 
-local function showBottomPopup(plugin, entity)
+local function showBottomPopup(plugin, entity, opts)
     if not entity then return end
     if plugin.active_details_dialog then
         UIManager:close(plugin.active_details_dialog)
@@ -693,7 +794,12 @@ local function showBottomPopup(plugin, entity)
     local normalized = {}
     for k, v in pairs(entity) do normalized[k] = v end
 
-    if plugin.resolveDescriptionForPage then
+    if plugin.resolveEntityState and (entity.states and #entity.states > 0) then
+        local r_role, r_status, r_desc = plugin:resolveEntityState(entity)
+        if r_role then normalized.role = r_role end
+        if r_status then normalized.status = r_status end
+        if r_desc and r_desc ~= "---" then normalized.description = r_desc end
+    elseif plugin.resolveDescriptionForPage then
         local resolved = plugin:resolveDescriptionForPage(entity)
         if resolved and resolved ~= "---" then
             normalized.description = resolved
@@ -715,11 +821,12 @@ local function showBottomPopup(plugin, entity)
         pad = G_reader_settings:readSetting("xray_popup_margin") or pad
     end
     local popup = XRayBottomPopup:new{
-        modal       = true,
-        entity      = normalized,
-        plugin      = plugin,
-        font_size   = fs,
-        margin_size = pad,
+        modal           = true,
+        entity          = normalized,
+        plugin          = plugin,
+        font_size       = fs,
+        margin_size     = pad,
+        restore_menu_cb = opts and opts.restore_menu_cb,
     }
     plugin.active_details_dialog = popup
     UIManager:show(popup)
@@ -1191,6 +1298,19 @@ function M:newMenu(var_name, args)
     args._xray_highlight = true
     local menu = Menu:new(args)
     menu._xray_highlight = true
+
+    -- Ensure dynamic submenus with sub_item_table_func work in standalone Menu
+    local orig_onMenuSelect = menu.onMenuSelect
+    menu.onMenuSelect = function(this, item)
+        if type(item.sub_item_table_func) == "function" then
+            item.sub_item_table = item.sub_item_table_func()
+        end
+        if orig_onMenuSelect then
+            return orig_onMenuSelect(this, item)
+        end
+        return true
+    end
+
     -- Lazily patch the private MenuItem class via the live item_group
     _patchMenuItemClass(menu.item_group)
     -- Attach pagination buttons to FocusManager layout
@@ -1285,7 +1405,7 @@ function M:checkBookLanguageMatch()
     local ButtonDialog = require("ui/widget/buttondialog")
     local mismatch_dialog
     mismatch_dialog = ButtonDialog:new{
-        title = self.loc:t("lang_mismatch_title") or "Language Mismatch",
+        title = (self.loc:t("lang_mismatch_title") or "Language Mismatch") .. "\n\n" .. msg,
         text = msg,
         buttons = {
             {
@@ -1635,7 +1755,7 @@ end
 
 function M:showCharacterDetails(character, opts)
     if shouldUseBottomPopup(self, opts) then
-        showBottomPopup(self, character)
+        showBottomPopup(self, character, opts)
         return
     end
     local metrics = self:calculatePopupFontMetrics(character)
@@ -1684,16 +1804,26 @@ function M:showCharacterDetails(character, opts)
     end
 
     -- 3. Combined attributes line (smaller, no label)
+    local resolved_role, resolved_status, resolved_desc = self:resolveEntityState(character)
+    resolved_desc = resolved_desc or self:resolveDescriptionForPage(character)
+    resolved_desc = SeriesManager.reorderSeriesDescription(resolved_desc)
+
     local attrs = {}
-    if character.role and character.role ~= "" and character.role ~= "---" then
-        table.insert(attrs, character.role)
+    local seen_attrs = {}
+    local function addAttr(val)
+        if val and val ~= "" and val ~= "---" and not seen_attrs[val:lower()] then
+            seen_attrs[val:lower()] = true
+            table.insert(attrs, val)
+        end
     end
-    if character.occupation and character.occupation ~= "" and character.occupation ~= "---" then
-        table.insert(attrs, character.occupation)
+    addAttr(resolved_role or character.role)
+    local active_status = resolved_status or character.status
+    if active_status and active_status ~= "alive" then
+        addAttr(active_status)
     end
-    if character.gender and character.gender ~= "" and character.gender ~= "---" then
-        table.insert(attrs, character.gender)
-    end
+    addAttr(character.occupation)
+    addAttr(character.gender)
+
     if #attrs > 0 then
         table.insert(vg_components, VerticalSpan:new{ width = math.max(6, math.floor(fs * 0.3)) })
         table.insert(vg_components, TextBoxWidget:new{
@@ -1724,7 +1854,6 @@ function M:showCharacterDetails(character, opts)
     end
 
     -- 5. Description (no label)
-    local resolved_desc = self:resolveDescriptionForPage(character)
     local display_desc = resolved_desc
     local is_truncated = false
     if resolved_desc and resolved_desc ~= "" and resolved_desc ~= "---" then
@@ -1752,104 +1881,91 @@ function M:showCharacterDetails(character, opts)
     local related = linked_enabled and self:findRelatedEntities(resolved_desc or "", character.name) or {}
     local mentions_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.mentions_enabled ~= false
     
-    local buttons = {}
-    if #related > 0 then
-        buttons = {
-            {
-                {
-                    text = self.loc:t("linked_entries") or "Linked Entries",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showRelatedEntities(related, opts, character)
-                    end,
-                }
-            },
-            {
-                {
-                    text = self.loc:t("find_mentions") or "Find Mentions",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showMentionsForEntity(character)
-                    end,
-                },
-                {
-                    text = self.loc:t("close") or "Close",
-                    is_enter_default = true,
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                        self.active_details_dialog = nil
-                    end,
-                }
-            }
-        }
-        if not mentions_enabled then
-            table.remove(buttons[2], 1)
-        end
-    else
-        if mentions_enabled then
-            buttons = {
-                {
-                    {
-                        text = self.loc:t("find_mentions") or "Find Mentions",
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                            self:showMentionsForEntity(character)
-                        end,
-                    },
-                    {
-                        text = self.loc:t("close") or "Close",
-                        is_enter_default = true,
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                            self.active_details_dialog = nil
-                        end,
-                    }
-                }
-            }
-        else
-            buttons = {
-                {
-                    {
-                        text = self.loc:t("close") or "Close",
-                        is_enter_default = true,
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                            self.active_details_dialog = nil
-                        end,
-                    }
-                }
-            }
-        end
-    end
+    local evolution_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.evolution_enabled ~= false
+    local has_evo = evolution_enabled and (((self.hasEntityEvolution and self:hasEntityEvolution(character)))
+                    or (character.states and #character.states > 1) or (character.history and #character.history > 1))
 
-    if is_truncated then
-        table.insert(buttons, 1, {
-            {
-                text = self.loc:t("read_more") or "Read More",
-                keep_menu_open = true,
-                callback = function()
-                    local TextViewer = require("ui/widget/textviewer")
-                    local full_text = character.name .. "\n"
-                    if #attrs > 0 then
-                        full_text = full_text .. table.concat(attrs, " | ") .. "\n"
-                    end
-                    if #meaningful_aliases > 0 then
-                        full_text = full_text .. (self.loc:t("label_aliases") or "Aliases") .. ": " .. table.concat(meaningful_aliases, ", ") .. "\n"
-                    end
-                    full_text = full_text .. "\n" .. resolved_desc
-                    if character.ai_reasoning then
-                        full_text = full_text .. "\n\n[" .. (self.loc:t("label_reasoning") or "AI Reasoning") .. "]\n" .. character.ai_reasoning
-                    end
-                    local viewer = TextViewer:new{
-                        modal = true,
-                        title = character.name,
-                        text = full_text,
-                    }
-                    UIManager:show(viewer)
+    local action_btns = {}
+    if has_evo and self.showPastEvolution then
+        table.insert(action_btns, {
+            text = self.loc:t("past_evolution") or "Story Arc",
+            callback = function()
+                if self.active_details_dialog then
+                    UIManager:close(self.active_details_dialog)
+                    self.active_details_dialog = nil
                 end
-            }
+                UIManager:nextTick(function()
+                    self:showPastEvolution(character)
+                end)
+            end,
         })
     end
+    if #related > 0 then
+        table.insert(action_btns, {
+            text = self.loc:t("linked_entries") or "Linked Entries",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showRelatedEntities(related, opts, character)
+            end,
+        })
+    end
+    if mentions_enabled then
+        table.insert(action_btns, {
+            text = self.loc:t("find_mentions") or "Find Mentions",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showMentionsForEntity(character)
+            end,
+        })
+    end
+    if opts and opts.restore_menu_cb then
+        table.insert(action_btns, {
+            text = self.loc:t("highlight_menu_btn") or "Highlight Menu",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                opts.restore_menu_cb()
+            end,
+        })
+    end
+
+    local close_btn = {
+        text = self.loc:t("close") or "Close",
+        is_enter_default = true,
+        callback = function()
+            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
+            self.active_details_dialog = nil
+        end,
+    }
+
+    local read_more_btn = nil
+    if is_truncated then
+        read_more_btn = {
+            text = self.loc:t("read_more") or "Read More",
+            keep_menu_open = true,
+            callback = function()
+                local TextViewer = require("ui/widget/textviewer")
+                local full_text = character.name .. "\n"
+                if #attrs > 0 then
+                    full_text = full_text .. table.concat(attrs, " | ") .. "\n"
+                end
+                if #meaningful_aliases > 0 then
+                    full_text = full_text .. (self.loc:t("label_aliases") or "Aliases") .. ": " .. table.concat(meaningful_aliases, ", ") .. "\n"
+                end
+                full_text = full_text .. "\n" .. resolved_desc
+                if character.ai_reasoning then
+                    full_text = full_text .. "\n\n[" .. (self.loc:t("label_reasoning") or "AI Reasoning") .. "]\n" .. character.ai_reasoning
+                end
+                local viewer = TextViewer:new{
+                    modal = true,
+                    title = character.name,
+                    text = full_text,
+                }
+                UIManager:show(viewer)
+            end,
+        }
+    end
+
+    local buttons = formatDialogButtons(action_btns, close_btn, read_more_btn)
 
     self.active_details_dialog = ButtonDialog:new{
         modal = true,
@@ -1861,7 +1977,7 @@ end
 
 function M:showLocationDetails(loc_item, opts)
     if shouldUseBottomPopup(self, opts) then
-        showBottomPopup(self, loc_item)
+        showBottomPopup(self, loc_item, opts)
         return
     end
     local metrics = self:calculatePopupFontMetrics(loc_item)
@@ -1918,94 +2034,81 @@ function M:showLocationDetails(loc_item, opts)
     local related = linked_enabled and self:findRelatedEntities(desc, loc_item.name) or {}
     local mentions_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.mentions_enabled ~= false
     
-    local buttons = {}
-    if #related > 0 then
-        buttons = {
-            {
-                {
-                    text = self.loc:t("linked_entries") or "Linked Entries",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showRelatedEntities(related, opts, loc_item)
-                    end,
-                }
-            },
-            {
-                {
-                    text = self.loc:t("find_mentions") or "Find Mentions",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showMentionsForEntity(loc_item)
-                    end,
-                },
-                {
-                    text = self.loc:t("close") or "Close",
-                    is_enter_default = true,
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                        self.active_details_dialog = nil
-                    end,
-                }
-            }
-        }
-        if not mentions_enabled then
-            table.remove(buttons[2], 1)
-        end
-    else
-        if mentions_enabled then
-            buttons = {
-                {
-                    {
-                        text = self.loc:t("find_mentions") or "Find Mentions",
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                            self:showMentionsForEntity(loc_item)
-                        end,
-                    },
-                    {
-                        text = self.loc:t("close") or "Close",
-                        is_enter_default = true,
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                            self.active_details_dialog = nil
-                        end,
-                    }
-                }
-            }
-        else
-            buttons = {
-                {
-                    {
-                        text = self.loc:t("close") or "Close",
-                        is_enter_default = true,
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                            self.active_details_dialog = nil
-                        end,
-                    }
-                }
-            }
-        end
-    end
+    local evolution_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.evolution_enabled ~= false
+    local has_evo = evolution_enabled and (((self.hasEntityEvolution and self:hasEntityEvolution(loc_item)))
+                    or (loc_item.states and #loc_item.states > 1) or (loc_item.history and #loc_item.history > 1))
 
-    if is_truncated then
-        table.insert(buttons, 1, {
-            {
-                text = self.loc:t("read_more") or "Read More",
-                keep_menu_open = true,
-                callback = function()
-                    local TextViewer = require("ui/widget/textviewer")
-                    local full_text = loc_item.name .. "\n\n" .. desc
-                    local viewer = TextViewer:new{
-                        modal = true,
-                        title = loc_item.name,
-                        text = full_text,
-                    }
-                    UIManager:show(viewer)
+    local action_btns = {}
+    if has_evo and self.showPastEvolution then
+        table.insert(action_btns, {
+            text = self.loc:t("past_evolution") or "Story Arc",
+            callback = function()
+                if self.active_details_dialog then
+                    UIManager:close(self.active_details_dialog)
+                    self.active_details_dialog = nil
                 end
-            }
+                UIManager:nextTick(function()
+                    self:showPastEvolution(loc_item)
+                end)
+            end,
         })
     end
+    if #related > 0 then
+        table.insert(action_btns, {
+            text = self.loc:t("linked_entries") or "Linked Entries",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showRelatedEntities(related, opts, loc_item)
+            end,
+        })
+    end
+    if mentions_enabled then
+        table.insert(action_btns, {
+            text = self.loc:t("find_mentions") or "Find Mentions",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showMentionsForEntity(loc_item)
+            end,
+        })
+    end
+    if opts and opts.restore_menu_cb then
+        table.insert(action_btns, {
+            text = self.loc:t("highlight_menu_btn") or "Highlight Menu",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                opts.restore_menu_cb()
+            end,
+        })
+    end
+
+    local close_btn = {
+        text = self.loc:t("close") or "Close",
+        is_enter_default = true,
+        callback = function()
+            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
+            self.active_details_dialog = nil
+        end,
+    }
+
+    local read_more_btn = nil
+    if is_truncated then
+        read_more_btn = {
+            text = self.loc:t("read_more") or "Read More",
+            keep_menu_open = true,
+            callback = function()
+                local TextViewer = require("ui/widget/textviewer")
+                local full_text = loc_item.name .. "\n\n" .. desc
+                local viewer = TextViewer:new{
+                    modal = true,
+                    title = loc_item.name,
+                    text = full_text,
+                }
+                UIManager:show(viewer)
+            end,
+        }
+    end
+
+    local buttons = formatDialogButtons(action_btns, close_btn, read_more_btn)
 
     self.active_details_dialog = ButtonDialog:new{
         modal = true,
@@ -2017,7 +2120,7 @@ end
 
 function M:showTermDetails(term, opts)
     if shouldUseBottomPopup(self, opts) then
-        showBottomPopup(self, term)
+        showBottomPopup(self, term, opts)
         return
     end
     local metrics = self:calculatePopupFontMetrics(term)
@@ -2139,126 +2242,90 @@ function M:showTermDetails(term, opts)
         }
     end
 
-    local buttons = {}
+    local evolution_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.evolution_enabled ~= false
+    local has_evo = evolution_enabled and (((self.hasEntityEvolution and self:hasEntityEvolution(term)))
+                    or (term.states and #term.states > 1) or (term.history and #term.history > 1))
+
+    local action_btns = {}
+    if has_evo and self.showPastEvolution then
+        table.insert(action_btns, {
+            text = self.loc:t("past_evolution") or "Story Arc",
+            callback = function()
+                if self.active_details_dialog then
+                    UIManager:close(self.active_details_dialog)
+                    self.active_details_dialog = nil
+                end
+                UIManager:nextTick(function()
+                    self:showPastEvolution(term)
+                end)
+            end,
+        })
+    end
     if #related > 0 then
-        buttons = {
-            {
-                {
-                    text = self.loc:t("linked_entries") or "Linked Entries",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showRelatedEntities(related, opts, term)
-                    end,
-                }
-            },
-            {
-                {
-                    text = self.loc:t("find_mentions") or "Find Mentions",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showMentionsForEntity(term)
-                    end,
-                },
-                {
-                    text = self.loc:t("close") or "Close",
-                    is_enter_default = true,
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                        self.active_details_dialog = nil
-                    end,
-                }
-            }
-        }
-        if not mentions_enabled then table.remove(buttons[2], 1) end
-        if opts and opts.low_confidence then
-            table.insert(buttons, 1, get_relookup_row())
-        end
-    else
-        if opts and opts.low_confidence then
-            buttons = { get_relookup_row() }
-            if mentions_enabled then
-                table.insert(buttons, {
-                    {
-                        text = self.loc:t("find_mentions") or "Find Mentions",
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                            self:showMentionsForEntity(term)
-                        end,
-                    }
-                })
-            end
-            table.insert(buttons, {
-                {
-                    text = self.loc:t("close") or "Close",
-                    is_enter_default = true,
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                        self.active_details_dialog = nil
-                    end,
-                }
-            })
-        else
-            if mentions_enabled then
-                buttons = {
-                    {
-                        {
-                            text = self.loc:t("find_mentions") or "Find Mentions",
-                            callback = function()
-                                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                                self:showMentionsForEntity(term)
-                            end,
-                        },
-                        {
-                            text = self.loc:t("close") or "Close",
-                            is_enter_default = true,
-                            callback = function()
-                                if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                                self.active_details_dialog = nil
-                            end,
-                        }
-                    }
-                }
-            else
-                buttons = {
-                    {
-                        {
-                            text = self.loc:t("close") or "Close",
-                            is_enter_default = true,
-                            callback = function()
-                                if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                                self.active_details_dialog = nil
-                            end,
-                        }
-                    }
-                }
-            end
-        end
+        table.insert(action_btns, {
+            text = self.loc:t("linked_entries") or "Linked Entries",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showRelatedEntities(related, opts, term)
+            end,
+        })
+    end
+    if mentions_enabled then
+        table.insert(action_btns, {
+            text = self.loc:t("find_mentions") or "Find Mentions",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showMentionsForEntity(term)
+            end,
+        })
+    end
+    if opts and opts.restore_menu_cb then
+        table.insert(action_btns, {
+            text = self.loc:t("highlight_menu_btn") or "Highlight Menu",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                opts.restore_menu_cb()
+            end,
+        })
     end
 
+    local close_btn = {
+        text = self.loc:t("close") or "Close",
+        is_enter_default = true,
+        callback = function()
+            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
+            self.active_details_dialog = nil
+        end,
+    }
+
+    local read_more_btn = nil
     if is_truncated then
-        table.insert(buttons, 1, {
-            {
-                text = self.loc:t("read_more") or "Read More",
-                keep_menu_open = true,
-                callback = function()
-                    local TextViewer = require("ui/widget/textviewer")
-                    local full_text = term.name .. "\n"
-                    if #attrs > 0 then
-                        full_text = full_text .. table.concat(attrs, " | ") .. "\n"
-                    end
-                    if #meaningful_aliases > 0 then
-                        full_text = full_text .. (self.loc:t("label_aliases") or "Aliases") .. ": " .. table.concat(meaningful_aliases, ", ") .. "\n"
-                    end
-                    full_text = full_text .. "\n" .. resolved_definition
-                    local viewer = TextViewer:new{
-                        modal = true,
-                        title = term.name,
-                        text = full_text,
-                    }
-                    UIManager:show(viewer)
+        read_more_btn = {
+            text = self.loc:t("read_more") or "Read More",
+            keep_menu_open = true,
+            callback = function()
+                local TextViewer = require("ui/widget/textviewer")
+                local full_text = term.name .. "\n"
+                if #attrs > 0 then
+                    full_text = full_text .. table.concat(attrs, " | ") .. "\n"
                 end
-            }
-        })
+                if #meaningful_aliases > 0 then
+                    full_text = full_text .. (self.loc:t("label_aliases") or "Aliases") .. ": " .. table.concat(meaningful_aliases, ", ") .. "\n"
+                end
+                full_text = full_text .. "\n" .. resolved_definition
+                local viewer = TextViewer:new{
+                    modal = true,
+                    title = term.name,
+                    text = full_text,
+                }
+                UIManager:show(viewer)
+            end
+        }
+    end
+
+    local buttons = formatDialogButtons(action_btns, close_btn, read_more_btn)
+    if opts and opts.low_confidence then
+        table.insert(buttons, 1, get_relookup_row())
     end
 
     self.active_details_dialog = ButtonDialog:new{
@@ -2426,6 +2493,30 @@ function M:showLinkedEntriesSettings()
             UIManager:setDirty(nil, "ui")
         end,
         about_text = self.loc:t("linked_entries_setting_desc") or "Linked Entries automatically connects characters, locations, and historical figures when they are mentioned in each other's descriptions.\n\nDisabling this will hide the [B]Linked Entries[/B] button from detail dialogs.",
+    })
+end
+
+function M:showEvolutionSettings()
+    local enabled_text = (self.loc and self.loc:t("evolution_enabled")) or "Enabled"
+    local disabled_text = (self.loc and self.loc:t("evolution_disabled")) or "Disabled"
+    XRaySettingsCard.show(self, {
+        title = (self.loc and self.loc:t("menu_evolution_settings")) or "Story Arc Settings",
+        options = {
+            { text = enabled_text, value = true },
+            { text = disabled_text, value = false },
+        },
+        get_current_func = function()
+            return (self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.evolution_enabled ~= false)
+        end,
+        save_func = function(val)
+            if self.ai_helper and self.ai_helper.saveSettings then
+                self.ai_helper:saveSettings({ evolution_enabled = val })
+            elseif self.ai_helper and self.ai_helper.settings then
+                self.ai_helper.settings.evolution_enabled = val
+            end
+            UIManager:setDirty(nil, "ui")
+        end,
+        about_text = (self.loc and self.loc:t("evolution_setting_desc")) or "Story Arc tracks how characters, locations, and terms evolve across chapters and milestones.\n\nDisabling this will hide the Story Arc button from lookup popups and detail dialogs.",
     })
 end
 
@@ -3136,6 +3227,197 @@ function M:showSpoilerSettings()
     })
 end
 
+function M:showPrefetchHorizonSettings()
+    local options = {
+        { text = self.loc and self.loc:t("horizon_off") or "Off (Current Only)", value = 0 },
+        { text = self.loc and self.loc:t("horizon_1") or "1 Chapter Ahead", value = 1 },
+        { text = self.loc and self.loc:t("horizon_2") or "2 Chapters Ahead", value = 2 },
+        { text = self.loc and self.loc:t("horizon_3") or "3 Chapters Ahead", value = 3 },
+        { text = self.loc and self.loc:t("horizon_5") or "5 Chapters Ahead", value = 5 },
+    }
+    XRaySettingsCard.show(self, {
+        title = self.loc and self.loc:t("menu_prefetch_horizon") or "Prefetch Horizon (Offline Readers)",
+        description = self.loc and self.loc:t("prefetch_horizon_desc") or "Pre-generate upcoming chapters in the background while online, keeping descriptions spoiler-free until you reach them:",
+        options = options,
+        get_current_func = function()
+            return (self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.prefetch_horizon_chapters) or 0
+        end,
+        save_func = function(val)
+            if self.ai_helper then
+                self.ai_helper:saveSettings({ prefetch_horizon_chapters = val })
+            end
+            if val > 0 and self.checkPrefetchHorizon then
+                self:checkPrefetchHorizon()
+            end
+            UIManager:setDirty(nil, "ui")
+        end,
+        about_text = "When reading offline (airplane mode or commuting), X-Ray cannot query the AI. The Prefetch Horizon scans N chapters ahead in the background while connected to Wi-Fi. All future character states and events remain strictly hidden until you reach their respective chapters.",
+    })
+end
+
+function M:startFullBookPreGeneration()
+    if self.ai_helper and type(self.ai_helper.hasApiKey) == "function" and not self.ai_helper:hasApiKey() then
+        if self.showWelcomeCard then self:showWelcomeCard() end
+        return
+    end
+
+    if self.is_sequential_scan_active or (self.isSequentialChapterScanActive and self:isSequentialChapterScanActive()) then
+        local done_ch = self.active_sequential_completed_chapters or self.active_sequential_completed or 0
+        local total_ch = self.active_sequential_total_chapters or self.active_sequential_total or 0
+        local done_seg = self.active_sequential_completed or 0
+        local total_seg = self.active_sequential_total or 0
+        local batch = self.active_sequential_current_batch or self.active_sequential_batch
+        local batch_text = "Preparing next batch..."
+        if batch and #batch > 0 then
+            local titles = {}
+            for _, b in ipairs(batch) do
+                local title_str = b.title or "Untitled"
+                if b.parent_title and b.is_virtual_segment and b.part_index and b.total_parts then
+                    title_str = string.format("%s (Part %d/%d)", b.parent_title, b.part_index, b.total_parts)
+                end
+                table.insert(titles, string.format("Ch. %d: %s", b.parent_toc_index or b.toc_index or 1, title_str))
+            end
+            batch_text = table.concat(titles, "\n  • ")
+        end
+        local elapsed = 0
+        if self.active_sequential_batch_start_time then
+            elapsed = math.max(0, os.time() - self.active_sequential_batch_start_time)
+        end
+        local status_msg = self.active_sequential_status or "Working..."
+        local ButtonDialog = require("ui/widget/buttondialog")
+        local progress_line
+        if total_seg > total_ch then
+            progress_line = string.format("• Progress: Chapter %d of %d (%d of %d segments processed)", done_ch, total_ch, done_seg, total_seg)
+        else
+            progress_line = string.format("• Progress: %d of %d chapters processed", done_ch, total_ch)
+        end
+        local status_text = string.format(
+            "Pre-generation is currently running in the background.\n\n" ..
+            "%s\n" ..
+            "• Current Batch:\n  • %s\n" ..
+            "• Status: %s (%ds elapsed)\n",
+            progress_line, batch_text, status_msg, elapsed
+        )
+        local dlg_title = self.loc and self.loc:t("menu_pregenerate_book") or "Pre-generate Entire Book"
+        local status_dlg
+        status_dlg = ButtonDialog:new{
+            modal = true,
+            title = dlg_title .. "\n\n" .. status_text,
+            text = status_text,
+            buttons = {
+                {
+                    {
+                        text = self.loc and self.loc:t("stop_pregeneration") or "Stop Pre-generation",
+                        callback = function()
+                            UIManager:close(status_dlg)
+                            if self.cancelSequentialChapterScan then
+                                self:cancelSequentialChapterScan()
+                            end
+                            UIManager:show(InfoMessage:new{ text = self.loc and self.loc:t("pregeneration_stopped") or "Pre-generation stopped.", timeout = 3 })
+                        end
+                    },
+                    {
+                        text = self.loc and self.loc:t("refresh") or "Refresh",
+                        callback = function()
+                            UIManager:close(status_dlg)
+                            self:startFullBookPreGeneration()
+                        end
+                    },
+                    {
+                        text = self.loc and self.loc:t("continue_in_background") or "Close",
+                        is_enter_default = true,
+                        callback = function()
+                            UIManager:close(status_dlg)
+                        end
+                    }
+                }
+            }
+        }
+        UIManager:show(status_dlg)
+        return
+    end
+
+    if not self.ui or not self.ui.document then
+        UIManager:show(InfoMessage:new{ text = self.loc and self.loc:t("no_document") or "No document open.", timeout = 3 })
+        return
+    end
+
+    local raw_toc
+    pcall(function()
+        if self.ui.document.getToc then raw_toc = self.ui.document:getToc() end
+    end)
+    local toc = utils:flattenTOC(raw_toc)
+    if not toc or #toc == 0 then
+        UIManager:show(InfoMessage:new{ text = self.loc and self.loc:t("no_toc_found") or "No table of contents found in this document.", timeout = 3 })
+        return
+    end
+
+    local narrative_chapters = {}
+    for i, ch in ipairs(toc) do
+        local title = ch.title or ""
+        local is_non = self.isNonNarrativeChapter and self:isNonNarrativeChapter(title)
+        if not is_non then
+            ch.toc_index = i
+            table.insert(narrative_chapters, ch)
+        end
+    end
+    local raw_chapter_count = #narrative_chapters
+
+    local ChapterAnalyzer = require(plugin_path .. "xray_chapteranalyzer")
+    local total_pages = self.ui and self.ui.document and self.ui.document.getPageCount and self.ui.document:getPageCount() or 0
+    if ChapterAnalyzer and ChapterAnalyzer.expandOversizedTocChapters then
+        narrative_chapters = ChapterAnalyzer:expandOversizedTocChapters(narrative_chapters, total_pages, 60)
+    end
+
+    if #narrative_chapters == 0 then
+        UIManager:show(InfoMessage:new{ text = self.loc and self.loc:t("no_chapters_found") or "No narrative chapters found.", timeout = 3 })
+        return
+    end
+
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local confirm_dlg
+    local prompt_text
+    if #narrative_chapters > raw_chapter_count then
+        prompt_text = string.format(
+            "This will sequentially scan and analyze all %d chapters (%d segments) in the background. Newly discovered character states, locations, and glossary terms will remain spoiler-free until you reach them.\n\nContinue?",
+            raw_chapter_count, #narrative_chapters
+        )
+    else
+        prompt_text = (self.loc and self.loc:t("pregenerate_confirm_text") or "This will sequentially scan and analyze all %d chapters in the background. Newly discovered character states, locations, and glossary terms will remain spoiler-free until you reach them.\n\nContinue?"):format(raw_chapter_count)
+    end
+
+    local dlg_title = self.loc and self.loc:t("menu_pregenerate_book") or "Pre-generate Entire Book"
+    confirm_dlg = ButtonDialog:new{
+        modal = true,
+        title = dlg_title .. "\n\n" .. prompt_text,
+        text = prompt_text,
+        buttons = {
+            {
+                {
+                    text = self.loc and self.loc:t("cancel") or "Cancel",
+                    callback = function() UIManager:close(confirm_dlg) end
+                },
+                {
+                    text = self.loc and self.loc:t("start") or "Start",
+                    is_enter_default = true,
+                    callback = function()
+                        UIManager:close(confirm_dlg)
+                        UIManager:show(InfoMessage:new{ text = self.loc and self.loc:t("pregeneration_started") or "Pre-generation started in background.", timeout = 3 })
+                        self:queueSequentialChapterScan(narrative_chapters, true, function(done, total, done_ch, total_ch)
+                            self:log(string.format("XRayPlugin: Pre-generation progress: %d of %d chapters (%d of %d segments).", done_ch or done, total_ch or total, done, total))
+                        end, function(success)
+                            if success then
+                                UIManager:show(InfoMessage:new{ text = self.loc and self.loc:t("pregeneration_complete") or "Pre-generation complete!", timeout = 4 })
+                            end
+                        end)
+                    end
+                }
+            }
+        }
+    }
+    UIManager:show(confirm_dlg)
+end
+
 function M:showEntityLengthPresets(setting_key, entity_name, is_timeline)
     local defaults = {
         char_desc_len    = 200,
@@ -3393,10 +3675,12 @@ end
 function M:confirmAndRebuildXRay()
     local ButtonDialog = require("ui/widget/buttondialog")
     local dialog
+    local dlg_title = self.loc:t("rebuild_confirm_title") or "Rebuild X-Ray Data"
+    local dlg_text = self.loc:t("rebuild_confirm_text")
+        or "This will discard all cached X-Ray data for this book and fetch fresh data from AI.\n\nContinue?"
     dialog = ButtonDialog:new{
-        title = self.loc:t("rebuild_confirm_title") or "Rebuild X-Ray Data",
-        text  = self.loc:t("rebuild_confirm_text")
-            or "This will discard all cached X-Ray data for this book and fetch fresh data from AI.\n\nContinue?",
+        title = dlg_title .. "\n\n" .. dlg_text,
+        text  = dlg_text,
         buttons = {{
             {
                 text = self.loc:t("cancel") or "Cancel",
@@ -3427,10 +3711,14 @@ function M:clearCache()
     self.historical_figures = {}
     self.terms = {}
     self.terms_fetched = false
+    self.images = {}
     self.author_info = nil
     self.book_data = {}
     self.series_context_loaded = false
     self.xray_mode_enabled = false
+    if self.image_manager and self.image_manager.clearSpineCache then
+        self.image_manager:clearSpineCache()
+    end
     UIManager:show(InfoMessage:new{ text = self.loc:t("cache_cleared"), timeout = 3 })
 end
 
@@ -3998,23 +4286,49 @@ function M:viewLog(page_num)
 end
 
 function M:toggleXRayMode()
-    local enabled_text = self.loc:t("xray_enabled_label") or "Enabled"
+    local button_text = self.loc:t("xray_mode_button_label") or "Button in Menu (Default)"
+    local auto_popup_text = self.loc:t("xray_mode_auto_popup_label") or "Auto-Popup on Highlight"
     local disabled_text = self.loc:t("xray_disabled_label") or "Disabled"
     XRaySettingsCard.show(self, {
         title = self.loc:t("menu_xray_mode") or "X-Ray Mode Settings",
         description = self.loc:t("xray_mode_desc"),
         options = {
-            { text = enabled_text, value = true },
-            { text = disabled_text, value = false },
+            { text = button_text, value = "button" },
+            { text = auto_popup_text, value = "auto_popup" },
+            { text = disabled_text, value = "disabled" },
         },
         get_current_func = function()
-            return self.xray_mode_enabled == true
+            if self.xray_mode_enabled == false then
+                return "disabled"
+            elseif self.xray_auto_popup == true then
+                return "auto_popup"
+            else
+                return "button"
+            end
         end,
         save_func = function(val)
-            self.xray_mode_enabled = val
-            if self.ai_helper then self.ai_helper:saveSettings({ xray_mode_enabled = val }) end
+            if val == "auto_popup" then
+                self.xray_mode_enabled = true
+                self.xray_auto_popup = true
+                if self.ai_helper then
+                    self.ai_helper:saveSettings({ xray_mode_enabled = true, xray_auto_popup = true })
+                end
+            elseif val == "button" or val == true then
+                self.xray_mode_enabled = true
+                self.xray_auto_popup = false
+                if self.ai_helper then
+                    self.ai_helper:saveSettings({ xray_mode_enabled = true, xray_auto_popup = false })
+                end
+            else
+                self.xray_mode_enabled = false
+                self.xray_auto_popup = false
+                if self.ai_helper then
+                    self.ai_helper:saveSettings({ xray_mode_enabled = false, xray_auto_popup = false })
+                end
+            end
             UIManager:setDirty(nil, "ui")
         end,
+        about_text = self.loc:t("xray_mode_about") or "Controls how X-Ray integrates with text selection while reading:\n\n• [B]Button in Menu:[/B] Adds an 'X-Ray' button to KOReader's dictionary and highlight menus.\n• [B]Auto-Popup on Highlight:[/B] Immediately opens X-Ray when you select a word or name that has X-Ray data, skipping the highlight menu. If no X-Ray data matches, the regular menu is shown. Use the 'Highlight Menu' button inside the popup anytime to highlight or look up the word in the dictionary.\n• [B]Disabled:[/B] Hides in-text X-Ray lookup buttons.",
     })
 end
 
@@ -4189,7 +4503,7 @@ end
 
 function M:showHistoricalFigureDetails(fig, opts)
     if shouldUseBottomPopup(self, opts) then
-        showBottomPopup(self, fig)
+        showBottomPopup(self, fig, opts)
         return
     end
     local metrics = self:calculatePopupFontMetrics(fig)
@@ -4246,94 +4560,81 @@ function M:showHistoricalFigureDetails(fig, opts)
     local related = linked_enabled and self:findRelatedEntities(bio, fig.name) or {}
     local mentions_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.mentions_enabled ~= false
     
-    local buttons = {}
-    if #related > 0 then
-        buttons = {
-            {
-                {
-                    text = self.loc:t("linked_entries") or "Linked Entries",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showRelatedEntities(related, opts, fig)
-                    end,
-                }
-            },
-            {
-                {
-                    text = self.loc:t("find_mentions") or "Find Mentions",
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                        self:showMentionsForEntity(fig)
-                    end,
-                },
-                {
-                    text = self.loc:t("close") or "Close",
-                    is_enter_default = true,
-                    callback = function()
-                        if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                        self.active_details_dialog = nil
-                    end,
-                }
-            }
-        }
-        if not mentions_enabled then
-            table.remove(buttons[2], 1)
-        end
-    else
-        if mentions_enabled then
-            buttons = {
-                {
-                    {
-                        text = self.loc:t("find_mentions") or "Find Mentions",
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
-                            self:showMentionsForEntity(fig)
-                        end,
-                    },
-                    {
-                        text = self.loc:t("close") or "Close",
-                        is_enter_default = true,
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                            self.active_details_dialog = nil
-                        end,
-                    }
-                }
-            }
-        else
-            buttons = {
-                {
-                    {
-                        text = self.loc:t("close") or "Close",
-                        is_enter_default = true,
-                        callback = function()
-                            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
-                            self.active_details_dialog = nil
-                        end,
-                    }
-                }
-            }
-        end
-    end
+    local evolution_enabled = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.evolution_enabled ~= false
+    local has_evo = evolution_enabled and (((self.hasEntityEvolution and self:hasEntityEvolution(fig)))
+                    or (fig.states and #fig.states > 1) or (fig.history and #fig.history > 1))
 
-    if is_truncated then
-        table.insert(buttons, 1, {
-            {
-                text = self.loc:t("read_more") or "Read More",
-                keep_menu_open = true,
-                callback = function()
-                    local TextViewer = require("ui/widget/textviewer")
-                    local full_text = fig.name .. "\n\n" .. bio
-                    local viewer = TextViewer:new{
-                        modal = true,
-                        title = fig.name,
-                        text = full_text,
-                    }
-                    UIManager:show(viewer)
+    local action_btns = {}
+    if has_evo and self.showPastEvolution then
+        table.insert(action_btns, {
+            text = self.loc:t("past_evolution") or "Story Arc",
+            callback = function()
+                if self.active_details_dialog then
+                    UIManager:close(self.active_details_dialog)
+                    self.active_details_dialog = nil
                 end
-            }
+                UIManager:nextTick(function()
+                    self:showPastEvolution(fig)
+                end)
+            end,
         })
     end
+    if #related > 0 then
+        table.insert(action_btns, {
+            text = self.loc:t("linked_entries") or "Linked Entries",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showRelatedEntities(related, opts, fig)
+            end,
+        })
+    end
+    if mentions_enabled then
+        table.insert(action_btns, {
+            text = self.loc:t("find_mentions") or "Find Mentions",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                self:showMentionsForEntity(fig)
+            end,
+        })
+    end
+    if opts and opts.restore_menu_cb then
+        table.insert(action_btns, {
+            text = self.loc:t("highlight_menu_btn") or "Highlight Menu",
+            callback = function()
+                if self.active_details_dialog then UIManager:close(self.active_details_dialog); self.active_details_dialog = nil end
+                opts.restore_menu_cb()
+            end,
+        })
+    end
+
+    local close_btn = {
+        text = self.loc:t("close") or "Close",
+        is_enter_default = true,
+        callback = function()
+            if self.active_details_dialog then UIManager:close(self.active_details_dialog) end
+            self.active_details_dialog = nil
+        end,
+    }
+
+    local read_more_btn = nil
+    if is_truncated then
+        read_more_btn = {
+            text = self.loc:t("read_more") or "Read More",
+            keep_menu_open = true,
+            callback = function()
+                local TextViewer = require("ui/widget/textviewer")
+                local full_text = fig.name .. "\n\n" .. bio
+                local viewer = TextViewer:new{
+                    modal = true,
+                    title = fig.name,
+                    text = full_text,
+                }
+                UIManager:show(viewer)
+            end
+        }
+    end
+
+    local buttons = formatDialogButtons(action_btns, close_btn, read_more_btn)
 
     self.active_details_dialog = ButtonDialog:new{
         modal = true,
@@ -4377,6 +4678,14 @@ function M:showQuickXRayMenu()
 end
 
 function M:showFullXRayMenu()
+    if self.openReaderMenuToPath and self.ui and self.ui.menu then
+        self:openReaderMenuToPath("xray")
+        return
+    end
+    self:showFullXRayMenuStandalone()
+end
+
+function M:showFullXRayMenuStandalone()
     if self.xray_menu then UIManager:close(self.xray_menu); self.xray_menu = nil end
     self.xray_menu = self:newMenu("xray_menu", { 
         title = self.loc:t("menu_xray") or "X-Ray", 
@@ -5996,9 +6305,10 @@ function M:getAIModelSelectionMenu(setting_type)
             id = "claude",
             display_name = "Claude",
             models = {
-                { id = "claude-sonnet-5.5", cost = "paid" },
+                { id = "claude-sonnet-5-5", cost = "paid" },
                 { id = "claude-sonnet-5", cost = "paid" },
                 { id = "claude-sonnet-4-6", cost = "paid" },
+                { id = "claude-haiku-5-5", cost = "paid" },
                 { id = "claude-haiku-4-5", cost = "paid" },
             }
         }
@@ -6470,7 +6780,7 @@ function M:checkSeriesContext()
     end
 
     -- 1. Try metadata check first (without AI, passes nil for ai_helper)
-    local series_info = self.series_manager and self.series_manager.detectSeries and self.series_manager:detectSeries(props, title, author, nil)
+    local series_info = self.series_manager and (self.series_manager.getSeriesInfo and self.series_manager:getSeriesInfo(self.book_data, props, title, author, nil) or (self.series_manager.detectSeries and self.series_manager:detectSeries(props, title, author, nil)))
     local has_explicit_metadata_index = props and (props.series_index or props.seriesindex or props.SeriesIndex)
     local has_title_index = series_info and self.series_manager and self.series_manager.extractIndexFromTitle and self.series_manager:extractIndexFromTitle(title, series_info.name)
 
@@ -6487,9 +6797,12 @@ function M:checkSeriesContext()
             local doc_file = self.ui and self.ui.document and self.ui.document.file
             local prior_indices = self:getExpectedPriorIndices(series_info, cache_data.books, doc_file)
             for _, p_idx in ipairs(prior_indices) do
-                if not cache_data.books[p_idx] or cache_data.books[p_idx].source ~= "local_xray" then
-                    local local_book = self.series_manager and self.series_manager.findLocalBookXRay and self.series_manager:findLocalBookXRay(series_info, p_idx, doc_file, nil, self.cache_manager)
-                    if local_book then
+                local cached_b = cache_data.books[p_idx]
+                local has_entities = bookHasEntities(cached_b, self.series_manager)
+                if not cached_b or not has_entities or cached_b.source ~= "local_xray" then
+                    local check_path = (cache_data.book_paths and cache_data.book_paths[p_idx]) or doc_file
+                    local local_book = self.series_manager and self.series_manager.findLocalBookXRay and self.series_manager:findLocalBookXRay(series_info, p_idx, check_path, nil, self.cache_manager)
+                    if bookHasEntities(local_book, self.series_manager) then
                         cache_data.books[p_idx] = local_book
                     end
                 end
@@ -6497,7 +6810,8 @@ function M:checkSeriesContext()
 
             local all_priors_cached = true
             for _, p_idx in ipairs(prior_indices) do
-                if not cache_data.books[p_idx] then
+                local cached_b = cache_data.books[p_idx]
+                if not bookHasEntities(cached_b, self.series_manager) then
                     all_priors_cached = false
                     break
                 end
@@ -6590,9 +6904,12 @@ function M:checkSeriesContext()
                         local doc_file = self.ui and self.ui.document and self.ui.document.file
                         local prior_indices = self:getExpectedPriorIndices(ai_series_info, cache_data.books, doc_file)
                         for _, p_idx in ipairs(prior_indices) do
-                            if not cache_data.books[p_idx] or cache_data.books[p_idx].source ~= "local_xray" then
-                                local local_book = self.series_manager and self.series_manager.findLocalBookXRay and self.series_manager:findLocalBookXRay(ai_series_info, p_idx, doc_file, nil, self.cache_manager)
-                                if local_book then
+                            local cached_b = cache_data.books[p_idx]
+                            local has_entities = bookHasEntities(cached_b, self.series_manager)
+                            if not cached_b or not has_entities or cached_b.source ~= "local_xray" then
+                                local check_path = (cache_data.book_paths and cache_data.book_paths[p_idx]) or doc_file
+                                local local_book = self.series_manager and self.series_manager.findLocalBookXRay and self.series_manager:findLocalBookXRay(ai_series_info, p_idx, check_path, nil, self.cache_manager)
+                                if bookHasEntities(local_book, self.series_manager) then
                                     cache_data.books[p_idx] = local_book
                                 end
                             end
@@ -6600,7 +6917,8 @@ function M:checkSeriesContext()
 
                         local all_priors_cached = true
                         for _, p_idx in ipairs(prior_indices) do
-                            if not cache_data.books[p_idx] then
+                            local cached_b = cache_data.books[p_idx]
+                            if not bookHasEntities(cached_b, self.series_manager) then
                                 all_priors_cached = false
                                 break
                             end
@@ -6629,16 +6947,7 @@ function M:checkSeriesContext()
     UIManager:scheduleIn(2, pollDetect)
 end
 
-function M:resolveDescriptionForPage(entity, current_page)
-    if not entity then return "---" end
-    local desc_key = entity.biography and "biography" or "description"
-    
-    -- If there's no history table, return the default description/biography
-    if not entity.history or #entity.history == 0 then
-        return entity[desc_key] or "---"
-    end
-    
-    -- Default current_page fallback
+function M:getCurrentDocPage()
     local doc_page = nil
     if self.ui then
         if type(self.ui.getCurrentPage) == "function" then
@@ -6647,10 +6956,250 @@ function M:resolveDescriptionForPage(entity, current_page)
         elseif self.ui.document and type(self.ui.document.getCurrentPage) == "function" then
             local ok, p = pcall(function() return self.ui.document:getCurrentPage() end)
             if ok and p then doc_page = p end
+        elseif self.ui.view and self.ui.view.state and self.ui.view.state.page then
+            doc_page = self.ui.view.state.page
+        elseif self.ui.rolling and self.ui.rolling.current_page then
+            doc_page = self.ui.rolling.current_page
+        elseif self.ui.paging and type(self.ui.paging.getCurrentPage) == "function" then
+            local ok, p = pcall(function() return self.ui.paging:getCurrentPage() end)
+            if ok and p then doc_page = p end
         end
     end
-    current_page = current_page or self.last_pageno or doc_page or 999999
-    
+    return doc_page or self.last_pageno or 1
+end
+
+function M:getCurrentChapterIndex(current_page)
+    current_page = current_page or self:getCurrentDocPage()
+    if not self.ui or not self.ui.document then return 1 end
+
+    local toc_idx = nil
+    pcall(function()
+        if self.ui and self.ui.toc and self.ui.toc.getTocIndexByPage then
+            toc_idx = self.ui.toc:getTocIndexByPage(current_page)
+        end
+    end)
+    if toc_idx and toc_idx > 0 then return toc_idx end
+
+    local raw_toc
+    pcall(function()
+        if self.ui.document.getToc then
+            raw_toc = self.ui.document:getToc()
+        end
+    end)
+    local toc = utils:flattenTOC(raw_toc)
+    if not toc or #toc == 0 then return 1 end
+    local best_idx = 1
+    local max_page = -1
+    for i, ch in ipairs(toc) do
+        local p = tonumber(ch.page)
+        if not p and ch.xpointer and self.ui.document.getPageFromXPointer then
+            pcall(function() p = self.ui.document:getPageFromXPointer(ch.xpointer) end)
+        end
+        if p and p <= current_page and p >= max_page then
+            max_page = p
+            best_idx = i
+        end
+    end
+    return best_idx
+end
+
+function M:hasEntityEvolution(entity)
+    if not entity then return false end
+    local state_count = (entity.states and type(entity.states) == "table") and #entity.states or 0
+    local hist_count = (entity.history and type(entity.history) == "table") and #entity.history or 0
+    if state_count == 0 and hist_count == 0 then return false end
+
+    local ok, Evolution = pcall(require, plugin_path .. "xray_evolution")
+    if not ok or not Evolution or not Evolution.build then return false end
+    local all_milestones = Evolution.build(entity, { is_full_book = true })
+    local key_milestones = Evolution.filterKey(all_milestones)
+    return #key_milestones >= 2
+end
+
+function M:getUnlockedStateCount(entity, cur_chap, cur_page, is_full_book)
+    if not entity then return 0 end
+    local has_states = (entity.states and type(entity.states) == "table" and #entity.states > 0)
+    local has_history = (entity.history and type(entity.history) == "table" and #entity.history > 0)
+    if not has_states and not has_history then return 0 end
+
+    if is_full_book == nil then
+        is_full_book = (self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.spoiler_setting == "full_book")
+    end
+    if is_full_book then
+        return has_states and #entity.states or #entity.history
+    end
+
+    cur_page = tonumber(cur_page) or tonumber(self:getCurrentDocPage()) or 1
+    cur_chap = tonumber(cur_chap) or tonumber(self:getCurrentChapterIndex(cur_page)) or 1
+
+    if has_states then
+        local count = 0
+        for _, s in ipairs(entity.states) do
+            local applies = false
+            local s_chap = tonumber(s.chapter_index) or 1
+            if s_chap < cur_chap then
+                applies = true
+            elseif s_chap == cur_chap then
+                local p_hint = tonumber(s.page_hint)
+                if p_hint and cur_page then
+                    applies = (cur_page >= p_hint)
+                else
+                    applies = true
+                end
+            end
+            if applies then
+                count = count + 1
+            end
+        end
+        return count
+    else
+        local count = 0
+        for _, h in ipairs(entity.history) do
+            local applies = false
+            local h_chap = tonumber(h.chapter_index or h.chapter)
+            local h_page = tonumber(h.page_hint or h.page)
+            if h_chap then
+                if h_chap < cur_chap then
+                    applies = true
+                elseif h_chap == cur_chap then
+                    if h_page and cur_page then
+                        applies = (cur_page >= h_page)
+                    else
+                        applies = true
+                    end
+                end
+            elseif h_page and cur_page then
+                applies = (cur_page >= h_page)
+            else
+                applies = true
+            end
+            if applies then
+                count = count + 1
+            end
+        end
+        return count
+    end
+end
+
+function M:isEntityVisibleAtCurrentPosition(entity, current_chapter_idx, current_page)
+    if not entity then return false end
+    local is_full_book = (self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.spoiler_setting == "full_book")
+    if is_full_book then return true end
+    if not entity.visible_from then return true end -- legacy entities are always visible
+    current_page = current_page or self:getCurrentDocPage()
+    current_chapter_idx = current_chapter_idx or self:getCurrentChapterIndex(current_page)
+
+    local v_chap = entity.visible_from.chapter_index or 1
+    if current_chapter_idx < v_chap then
+        return false
+    elseif current_chapter_idx == v_chap then
+        if entity.visible_from.page_hint and current_page then
+            return current_page >= entity.visible_from.page_hint
+        end
+        return true
+    else
+        return true
+    end
+end
+
+function M:resolveEntityState(entity, current_chapter_idx, current_page)
+    if not entity then return nil, nil, nil end
+    current_page = current_page or self:getCurrentDocPage()
+    current_chapter_idx = current_chapter_idx or self:getCurrentChapterIndex(current_page)
+
+    local desc_key = (entity.biography and "biography") or (entity.definition and "definition") or "description"
+    local base_desc = entity[desc_key] or entity.description
+
+    local prior_sections = {}
+    if base_desc and type(base_desc) == "string" and base_desc:find("%[From Book [%d%.]+%]") then
+        for sec in (base_desc .. "\n\n"):gmatch("(.-)\n%s*\n+") do
+            local trimmed = sec:match("^%s*(.-)%s*$")
+            if trimmed and trimmed:find("^%[From Book [%d%.]+%]") then
+                table.insert(prior_sections, trimmed)
+            end
+        end
+    end
+
+    local function combineWithPrior(raw_text)
+        if not raw_text or raw_text == "" or raw_text == "---" then
+            if #prior_sections > 0 then
+                return SeriesManager.reorderSeriesDescription(table.concat(prior_sections, "\n\n"))
+            end
+            return raw_text
+        end
+        if #prior_sections > 0 and not raw_text:find("%[From Book [%d%.]+%]") then
+            return SeriesManager.reorderSeriesDescription(raw_text .. "\n\n" .. table.concat(prior_sections, "\n\n"))
+        end
+        return SeriesManager.reorderSeriesDescription(raw_text)
+    end
+
+    if not entity.states or #entity.states == 0 then
+        return entity.role or entity.category, entity.status or "alive", combineWithPrior(base_desc)
+    end
+
+    local best_state = nil
+    for _, s in ipairs(entity.states) do
+        local applies = false
+        local s_chap = s.chapter_index or 1
+        if s_chap < current_chapter_idx then
+            applies = true
+        elseif s_chap == current_chapter_idx then
+            if s.page_hint and current_page then
+                applies = (current_page >= s.page_hint)
+            else
+                applies = true
+            end
+        end
+        if applies then
+            if not best_state then
+                best_state = s
+            else
+                local best_chap = best_state.chapter_index or 1
+                if s_chap > best_chap then
+                    best_state = s
+                elseif s_chap == best_chap and (s.page_hint or 0) >= (best_state.page_hint or 0) then
+                    best_state = s
+                end
+            end
+        end
+    end
+
+    if best_state then
+        local raw_d = best_state.description or base_desc
+        return best_state.role or entity.role or entity.category, best_state.status or entity.status or "alive", combineWithPrior(raw_d)
+    end
+
+    -- If reader is earlier than all states, return first state or base
+    if #entity.states > 0 then
+        local first_state = entity.states[1]
+        local raw_d = first_state.description or base_desc
+        return first_state.role or entity.role or entity.category, first_state.status or entity.status or "alive", combineWithPrior(raw_d)
+    end
+
+    return entity.role or entity.category, entity.status or "alive", combineWithPrior(base_desc)
+end
+
+function M:resolveDescriptionForPage(entity, current_page)
+    if not entity then return "---" end
+    local desc_key = (entity.biography and "biography") or (entity.definition and "definition") or "description"
+
+    -- Route through state resolution if states exist
+    if entity.states and #entity.states > 0 then
+        local _, _, r_desc = self:resolveEntityState(entity, nil, current_page)
+        if r_desc and r_desc ~= "" and r_desc ~= "---" then
+            return SeriesManager.reorderSeriesDescription(r_desc)
+        end
+    end
+
+    -- If there's no history table, return the default description/biography
+    if not entity.history or #entity.history == 0 then
+        local raw_d = entity[desc_key] or entity.description
+        return raw_d and SeriesManager.reorderSeriesDescription(raw_d) or "---"
+    end
+
+    -- Default current_page fallback
+    current_page = current_page or self:getCurrentDocPage()
+
     -- Traverse history and find the latest entry where entry.page <= current_page
     local best_entry = nil
     for _, entry in ipairs(entity.history) do
@@ -6660,17 +7209,57 @@ function M:resolveDescriptionForPage(entity, current_page)
             end
         end
     end
-    
+
     if best_entry then
-        return best_entry[desc_key] or "---"
+        local raw_d = best_entry[desc_key] or best_entry.description
+        local base_d = entity[desc_key] or entity.description
+        if raw_d and base_d and not raw_d:find("%[From Book [%d%.]+%]") and base_d:find("%[From Book [%d%.]+%]") then
+            raw_d = raw_d .. "\n\n" .. base_d
+        end
+        return raw_d and SeriesManager.reorderSeriesDescription(raw_d) or "---"
     end
-    
+
     -- Fallback to the first history entry if we're somehow before any recorded history page
     if #entity.history > 0 then
-        return entity.history[1][desc_key] or "---"
+        local raw_d = entity.history[1][desc_key] or entity.history[1].description
+        local base_d = entity[desc_key] or entity.description
+        if raw_d and base_d and not raw_d:find("%[From Book [%d%.]+%]") and base_d:find("%[From Book [%d%.]+%]") then
+            raw_d = raw_d .. "\n\n" .. base_d
+        end
+        return raw_d and SeriesManager.reorderSeriesDescription(raw_d) or "---"
     end
-    
-    return entity[desc_key] or "---"
+
+    local raw_d = entity[desc_key] or entity.description
+    return raw_d and SeriesManager.reorderSeriesDescription(raw_d) or "---"
+end
+
+function M:showPastEvolution(entity, opts)
+    if not entity then return end
+    local ok, err = pcall(function()
+        if self.active_evolution_menu then
+            UIManager:close(self.active_evolution_menu)
+            self.active_evolution_menu = nil
+        end
+        local EntityListOverlay = require(plugin_path .. "xray_entity_list")
+        self.active_evolution_menu = EntityListOverlay:new{
+            plugin = self,
+            mode = "evolution",
+            entity = entity,
+            opts = opts or {},
+            on_close_callback = function()
+                self.active_evolution_menu = nil
+            end,
+        }
+        UIManager:show(self.active_evolution_menu, "ui")
+    end)
+    if not ok then
+        logger.warn("XRayPlugin: showPastEvolution error: " .. tostring(err))
+        local InfoMessage = require("ui/widget/infomessage")
+        UIManager:show(InfoMessage:new{
+            text = "Could not display story arc: " .. tostring(err),
+            timeout = 3,
+        })
+    end
 end
 
 function M:handleUnitConversionLookup(text)
@@ -7043,28 +7632,63 @@ function M:showManageSeriesDialog()
         local slug = self.series_manager:makeSlug(series_name)
         if not slug or slug == "" then slug = "series" end
 
+        -- 0. Prune removed books from series cache
+        local current_roster_indices = {}
+        for _, b in ipairs(books_roster) do
+            if b.index then
+                current_roster_indices[b.index] = true
+            end
+        end
+        local existing_series_cache = self.series_manager and self.series_manager.loadSeriesCache and self.series_manager:loadSeriesCache(slug)
+        if existing_series_cache and existing_series_cache.books then
+            local modified = false
+            for idx in pairs(existing_series_cache.books) do
+                if not current_roster_indices[idx] then
+                    existing_series_cache.books[idx] = nil
+                    if existing_series_cache.book_paths then
+                        existing_series_cache.book_paths[idx] = nil
+                    end
+                    modified = true
+                end
+            end
+            if modified and self.series_manager.saveSeriesCache then
+                self.series_manager:saveSeriesCache(slug, existing_series_cache)
+            end
+        end
+
         -- 1. Sync all books to series cache
         for _, b in ipairs(books_roster) do
             if b.index then
-                local minimal_data = {
+                local real_data = nil
+                if b.path then
+                    if self.cache_manager and self.cache_manager.loadCache then
+                        real_data = self.cache_manager:loadCache(b.path)
+                    end
+                    if (not real_data or not bookHasEntities(real_data, self.series_manager)) and self.series_manager and self.series_manager.getCandidateSidecarDirs then
+                        local cand_dirs = self.series_manager:getCandidateSidecarDirs(b.path)
+                        for _, sdr_dir in ipairs(cand_dirs) do
+                            local cache_file = sdr_dir .. "/xray_cache.lua"
+                            local ok_c, loaded = pcall(dofile, cache_file)
+                            if ok_c and type(loaded) == "table" and bookHasEntities(loaded, self.series_manager) then
+                                real_data = loaded
+                                break
+                            end
+                        end
+                    end
+                end
+
+                local has_entities = bookHasEntities(real_data, self.series_manager)
+                local book_to_sync = has_entities and real_data or {
                     title = b.title,
                     author = b.author,
                     characters = {},
                     locations = {},
                     terms = {},
                     timeline = {},
+                    source = "roster",
                 }
-                -- If we have an existing cache or sidecar, load real entities if available
-                if b.path then
-                    local sep = b.path:find("\\") and "\\" or "/"
-                    local cache_file = b.path .. ".sdr" .. sep .. "xray_cache.lua"
-                    local ok_c, real_cache = pcall(dofile, cache_file)
-                    if ok_c and type(real_cache) == "table" then
-                        minimal_data = real_cache
-                    end
-                end
-
-                self.series_manager:syncBookToSeriesCache(slug, b.index, minimal_data, b.path)
+                local source = has_entities and (real_data.source or "local_xray") or "roster"
+                self.series_manager:syncBookToSeriesCache(slug, b.index, book_to_sync, b.path, source)
 
                 -- 2. Write metadata to KOReader sidecar
                 if b.path then
@@ -7082,6 +7706,8 @@ function M:showManageSeriesDialog()
                     self.book_data.series_index = b.index
                 end
             end
+            self.book_data.series_context_loaded = nil
+            self.book_data.series_context_dismissed = nil
             if self.cache_manager and doc_file then
                 self.cache_manager:asyncSaveCache(doc_file, self.book_data)
             end
@@ -7231,10 +7857,14 @@ function M:showImages(opts)
 
     -- Load images: prefer book_data.images from cache (preserves user customizations & rotations),
     -- fall back to scan only if no cached images exist.
-    if (not self.book_data or not self.book_data.images) and self.cache_manager and self.ui and self.ui.document and self.ui.document.file then
+    if (not self.book_data or not self.book_data.images or #self.book_data.images == 0) and self.cache_manager and self.ui and self.ui.document and self.ui.document.file then
         local loaded = self.cache_manager:loadCache(self.ui.document.file)
         if loaded and type(loaded) == "table" then
-            self.book_data = loaded
+            if not self.book_data or type(self.book_data) ~= "table" then
+                self.book_data = loaded
+            elseif loaded.images and #loaded.images > 0 then
+                self.book_data.images = loaded.images
+            end
         end
     end
 
@@ -7297,9 +7927,11 @@ function M:showImages(opts)
                 end
             end
             self.images = scanned
-            self.book_data.images = self.images
-            if self.cache_manager and self.ui.document.file then
-                self.cache_manager:asyncSaveCache(self.ui.document.file, self.book_data)
+            if #scanned > 0 then
+                self.book_data.images = self.images
+                if self.cache_manager and self.ui.document.file then
+                    self.cache_manager:asyncSaveCache(self.ui.document.file, self.book_data)
+                end
             end
         end
     end
@@ -7939,8 +8571,8 @@ function M:openImageViewer(image_entry)
     if not image_entry then return end
     
     -- Check spoiler protection
-    local is_spoiler = image_entry.is_spoiler
-    if is_spoiler and self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.no_spoilers ~= false then
+    local is_spoiler = image_entry.is_spoiler and not image_entry.spoiler_revealed
+    if is_spoiler and self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.spoiler_setting ~= "full_book" and self.ai_helper.settings.no_spoilers ~= false then
         local ConfirmBox = require("ui/widget/confirmbox")
         local msg = string.format(self.loc:t("img_spoiler_confirm") or "This image appears on page %d (past your current reading progress). Reveal image?", tonumber(image_entry.page) or 0)
         local confirm
@@ -7951,7 +8583,25 @@ function M:openImageViewer(image_entry)
             cancel_text = self.loc:t("cancel"),
             ok_callback = function()
                 image_entry.is_spoiler = false
+                image_entry.spoiler_revealed = true
+                if self.images then
+                    for _, img in ipairs(self.images) do
+                        if img.id == image_entry.id or img.href == image_entry.href then
+                            img.is_spoiler = false
+                            img.spoiler_revealed = true
+                        end
+                    end
+                end
+                if self.book_data and self.book_data.images then
+                    for _, img in ipairs(self.book_data.images) do
+                        if img.id == image_entry.id or img.href == image_entry.href then
+                            img.is_spoiler = false
+                            img.spoiler_revealed = true
+                        end
+                    end
+                end
                 if self.image_gallery_overlay then
+                    self.image_gallery_overlay.cached_pages = nil
                     self.image_gallery_overlay:buildUI()
                     UIManager:setDirty(self.image_gallery_overlay, "ui")
                 end

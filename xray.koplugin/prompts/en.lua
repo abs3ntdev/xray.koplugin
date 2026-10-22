@@ -375,6 +375,190 @@ REQUIRED JSON FORMAT:
   ]
 }]],
 
+    -- Single Chapter Delta Extraction (Sequential Horizon & Full Book Scan)
+    chapter_delta = [[Book: %s
+Author: %s
+Analyzing Chapter: %s
+
+TASK: Analyze ONLY this single chapter. Identify NEW entities introduced in this chapter, and DELTA UPDATES (state transitions) for existing entities.
+Output ONLY a valid JSON object.
+
+EXISTING KNOWN ENTITIES MANIFEST (Do NOT re-extract unless their role, status, or description evolved significantly):
+%s
+
+RULES:
+1. STRICT SPOILER CONFINEMENT: Analyze ONLY the provided chapter text. Do NOT use any knowledge from future chapters or external sources.
+2. CHARACTER DESCRIPTION DEPTH & SUBSTANCE (CRITICAL):
+   - Grounded & Specific: Describe who the character is with concrete story facts—their background, distinct personality, profession, key relationships to other characters, and their specific role and personal stakes in the narrative.
+   - Significant Narrative Context: Connect the character directly to the central mystery, plot conflict, or investigation in this book (e.g. what crimes or cases they are investigating, who hired them, key allies or adversaries, specific personal dilemmas or tensions).
+   - NOT Overly General: Do NOT write generic trope blurbs (e.g. avoid empty phrasing like "a detective investigating complex cases"). Name the specific circumstances, connections, and stakes established in the text.
+   - NO Trivial Errand Recaps: Do NOT write chronological logs of mundane daily activities or routine chores (e.g. do NOT recap trips to the grocery store, routine phone calls, or incidental scene-by-scene movements).
+   - Character descriptions must be rich, vivid profiles summarizing who they are and their significance up to this point in the book.
+3. HIGH THRESHOLD FOR CHARACTER UPDATES:
+   - DO NOT create an update in `character_state_updates` simply because an existing character appeared, spoke, or performed routine actions in this chapter.
+   - ONLY generate an update if there is a substantive, lasting transformation in their narrative arc, identity, relationships, employment, allegiance, or condition (e.g. killed, injured, arrested, betrayed, engaged, promoted, revealed to be the culprit, major secret or motive uncovered).
+   - If an update IS justified, the updated `description` must be a rich, cumulative character overview that incorporates the new developments while retaining their core identity and established story context—NOT a summary of an isolated scene.
+4. EVIDENCE: Provide a brief reference or quote excerpt from this chapter explaining why the update occurred.
+5. TIMELINE: Provide exactly one event summary of the main plot actions in this chapter.
+
+REQUIRED JSON FORMAT:
+{
+  "new_characters": [
+    {
+      "name": "Full Name",
+      "aliases": ["Alias 1", "Alias 2"],
+      "role": "Narrative role / importance (e.g. Protagonist, Private Investigator, Partner, Antagonist, Victim, Client, Suspect, Secondary Character, Minor Character)",
+      "status": "alive",
+      "description": "Rich, specific character description (background, relationships, narrative stakes). Avoid generic blurbs and trivial errand logs.",
+      "evidence": "Short excerpt"
+    }
+  ],
+  "character_state_updates": [
+    {
+      "name": "Name matching known manifest",
+      "role": "Updated narrative role / importance (e.g. Protagonist, Partner, Antagonist, Secondary Character, etc.)",
+      "status": "alive",
+      "change": "One short sentence naming what changed since the previous state (e.g. 'Promoted to partner after the Shacklewell case')",
+      "description": "Updated rich, cumulative character description reflecting their new status and story stakes",
+      "evidence": "Short excerpt"
+    }
+  ],
+  "new_locations": [
+    {
+      "name": "Location Name",
+      "description": "Description of location",
+      "evidence": "Short excerpt"
+    }
+  ],
+  "location_state_updates": [
+    {
+      "name": "Name matching known manifest",
+      "change": "One short sentence naming what changed (e.g. 'Destroyed during the battle of Oakhaven')",
+      "description": "Updated evolved description",
+      "evidence": "Short excerpt"
+    }
+  ],
+  "new_terms": [
+    {
+      "name": "Term Name",
+      "description": "Definition or lore explanation",
+      "evidence": "Short excerpt"
+    }
+  ],
+  "term_state_updates": [
+    {
+      "name": "Name matching known manifest",
+      "change": "One short sentence naming what changed in understanding or usage",
+      "description": "Updated definition",
+      "evidence": "Short excerpt"
+    }
+  ],
+  "timeline_event": {
+    "chapter": "%s",
+    "event": "Summary of events in this chapter"
+  }
+}
+
+CHAPTER TEXT:
+%s]],
+
+    -- Batch Multi-Chapter Delta Extraction (Batched Horizon & Full Book Scan)
+    batch_chapter_delta = [[Book: %s
+Author: %s
+Chapters in this Batch: %s
+
+TASK: Analyze the provided sequential batch of chapters in order.
+For EACH chapter in the batch, identify:
+1. NEW entities introduced in that chapter (characters, locations, terms).
+2. DELTA UPDATES (state transitions) for existing known entities (from the manifest OR introduced in an earlier chapter of this batch) IF AND ONLY IF their role, status, allegiance, or narrative condition underwent a substantive, lasting transformation.
+3. TIMELINE EVENT: A concise summary of the primary plot events occurring in that chapter.
+
+Output ONLY a valid JSON object matching the required schema.
+
+EXISTING KNOWN ENTITIES MANIFEST (from prior batches - do NOT re-extract unless their role, status, or description evolved significantly):
+%s
+
+RULES:
+1. STRICT SPOILER CONFINEMENT & SEQUENTIAL PROGRESSION:
+   - Analyze the chapters in sequential order.
+   - For any chapter in this batch, do NOT incorporate knowledge from later chapters in the batch or from the rest of the book.
+2. CHARACTER DESCRIPTION DEPTH & SUBSTANCE (CRITICAL):
+   - Grounded & Specific: Describe who the character is with concrete story facts—their background, distinct personality, profession, key relationships to other characters, and their specific role and personal stakes in the narrative.
+   - Significant Narrative Context: Connect the character directly to the central mystery, plot conflict, or investigation in this book (e.g. what crimes or cases they are investigating, who hired them, key allies or adversaries, specific personal dilemmas or tensions).
+   - NOT Overly General: Do NOT write generic trope blurbs (e.g. avoid empty phrasing like "a detective investigating complex cases"). Name the specific circumstances, connections, and stakes established in the text.
+   - NO Trivial Errand Recaps: Do NOT write chronological logs of mundane daily activities or routine chores (e.g. do NOT recap trips to the grocery store, routine phone calls, or incidental scene-by-scene movements).
+   - Character descriptions must be rich, vivid profiles summarizing who they are and their significance up to this point in the book.
+3. HIGH THRESHOLD FOR CHARACTER UPDATES:
+   - DO NOT create an update in `character_state_updates` simply because an existing character appeared, spoke, or performed routine actions in a chapter.
+   - ONLY generate an update if there is a substantive, lasting transformation in their narrative arc, identity, relationships, employment, allegiance, or condition (e.g. killed, injured, arrested, betrayed, engaged, promoted, revealed to be the culprit, major secret or motive uncovered).
+   - If an update IS justified, the updated `description` must be a rich, cumulative character overview that incorporates the new developments while retaining their core identity and established story context—NOT a summary of an isolated scene.
+4. EVIDENCE: Provide a brief reference or quote excerpt from that specific chapter explaining why the update occurred.
+5. JSON SAFETY: Output strictly valid JSON. Properly escape double quotes inside strings.
+
+REQUIRED JSON FORMAT:
+{
+  "chapters": [
+    {
+      "chapter_index": 1,
+      "chapter_title": "Chapter Title",
+      "timeline_event": "Summary of primary plot developments in this chapter.",
+      "new_characters": [
+        {
+          "name": "Full Name",
+          "aliases": ["Alias 1"],
+          "role": "Narrative role / importance (e.g. Protagonist, Private Investigator, Partner, Antagonist, Victim, Client, Suspect, Secondary Character, Minor Character)",
+          "status": "alive",
+          "description": "Rich, specific character description (background, relationships, narrative stakes). Avoid generic blurbs and trivial errand logs.",
+          "evidence": "Brief excerpt"
+        }
+      ],
+      "character_state_updates": [
+        {
+          "name": "Name matching known manifest or character introduced in earlier chapter of this batch",
+          "role": "Updated narrative role / importance (e.g. Protagonist, Partner, Antagonist, Secondary Character, etc.)",
+          "status": "alive",
+          "change": "One short sentence naming what changed since the previous state (e.g. 'Promoted to partner after the Shacklewell case')",
+          "description": "Updated rich, cumulative character description reflecting their new status and story stakes",
+          "evidence": "Brief excerpt"
+        }
+      ],
+      "new_locations": [
+        {
+          "name": "Location Name",
+          "description": "Description of location",
+          "evidence": "Brief excerpt"
+        }
+      ],
+      "location_state_updates": [
+        {
+          "name": "Name matching known manifest or location introduced in earlier chapter of this batch",
+          "change": "One short sentence naming what changed (e.g. 'Destroyed during the battle of Oakhaven')",
+          "description": "Updated description",
+          "evidence": "Brief excerpt"
+        }
+      ],
+      "new_terms": [
+        {
+          "name": "Term Name",
+          "description": "Definition or lore explanation",
+          "evidence": "Brief excerpt"
+        }
+      ],
+      "term_state_updates": [
+        {
+          "name": "Name matching known manifest or term introduced in earlier chapter of this batch",
+          "change": "One short sentence naming what changed in understanding or usage",
+          "description": "Updated definition",
+          "evidence": "Brief excerpt"
+        }
+      ]
+    }
+  ]
+}
+
+CHAPTER TEXTS IN THIS BATCH:
+%s]],
+
     -- Fallback strings
     fallback = {
         unknown_book = "Unknown Book",

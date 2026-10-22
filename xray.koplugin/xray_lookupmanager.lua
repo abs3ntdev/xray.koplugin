@@ -338,6 +338,69 @@ function LookupManager:lookupAll(text)
     return final_results
 end
 
+-- Count whitespace-separated words
+local function _countWords(s)
+    if not s or s == "" then return 0 end
+    local n = 0
+    for _ in s:gmatch("%S+") do n = n + 1 end
+    return n
+end
+
+-- Check if candidate matches as a genuine entity target (rather than a long sentence highlight)
+function LookupManager:isAutoPopupTargetMatch(query, candidate)
+    if not candidate or not candidate.item then return false end
+    if candidate.score >= 95 then return true end
+    if candidate.item_type == "term" and candidate.score < LOW_CONFIDENCE_THRESHOLD then
+        return false
+    end
+
+    local norm_name = self:getNormName(candidate.item)
+    local norm_aliases = self:getNormAliases(candidate.item) or {}
+    local targets = {}
+    if norm_name and norm_name ~= "" then table.insert(targets, norm_name) end
+    for _, a in ipairs(norm_aliases) do
+        if a and a ~= "" then table.insert(targets, a) end
+    end
+
+    local query_is_unsegmented = _isUnsegmentedOrPrefixScript(query)
+    local query_words = _countWords(query)
+    local query_chars = _utf8CharLen(query)
+
+    for _, target in ipairs(targets) do
+        local target_is_unsegmented = _isUnsegmentedOrPrefixScript(target)
+        local target_chars = _utf8CharLen(target)
+        if query_is_unsegmented or target_is_unsegmented then
+            if query_chars <= target_chars + 3 then
+                return true
+            end
+        else
+            local target_words = _countWords(target)
+            if query_words <= target_words and query_chars <= target_chars + 3 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Filter lookup results specifically for automatic highlight interception
+function LookupManager:lookupAutoPopup(text)
+    if not text or text == "" then return {} end
+    local query = self:normalize(text)
+    if #query < 2 then return {} end
+
+    local all = self:lookupAll(text)
+    if #all == 0 then return {} end
+
+    local valid = {}
+    for _, cand in ipairs(all) do
+        if self:isAutoPopupTargetMatch(query, cand) then
+            table.insert(valid, cand)
+        end
+    end
+    return valid
+end
+
 -- Convenience single-result wrapper used by callers that don't need disambiguation
 function LookupManager:lookup(text)
     local all = self:lookupAll(text)
@@ -361,7 +424,8 @@ function LookupManager:showResult(item, item_type, opts)
 end
 
 -- Handle the UI part of the lookup, with a disambiguation picker for multiple hits
-function LookupManager:handleLookup(text, pos0, pos1)
+function LookupManager:handleLookup(text, pos0, pos1, opts)
+    opts = opts or {}
     if type(text) == "table" then
         text = text.text or text.word or text.selection_text or ""
     end
@@ -379,22 +443,21 @@ function LookupManager:handleLookup(text, pos0, pos1)
         end
     end
 
-    local all = self:lookupAll(text)
+    local all = (opts.candidates and #opts.candidates > 0) and opts.candidates or self:lookupAll(text)
 
     if #all == 1 then
         -- Unambiguous — show directly
         local match = all[1]
+        local match_opts = {}
+        for k, v in pairs(opts) do match_opts[k] = v end
         if match.item_type == "term" and match.score < LOW_CONFIDENCE_THRESHOLD then
-            self:showResult(match.item, match.item_type, {
-                low_confidence = true,
-                original_text  = text,
-                pos0           = pos0,
-                pos1           = pos1,
-                score          = match.score,
-            })
-        else
-            self:showResult(match.item, match.item_type)
+            match_opts.low_confidence = true
+            match_opts.original_text  = text
+            match_opts.pos0           = pos0
+            match_opts.pos1           = pos1
+            match_opts.score          = match.score
         end
+        self:showResult(match.item, match.item_type, match_opts)
 
     elseif #all > 1 then
         -- Multiple candidates — let the user pick
@@ -413,21 +476,29 @@ function LookupManager:handleLookup(text, pos0, pos1)
                     text = display_name,
                     callback = function()
                         UIManager:close(dialog)
-                        self:showResult(captured_item, captured_type)
+                        self:showResult(captured_item, captured_type, opts)
                     end,
                 }
             })
         end
 
-        -- Cancel row
-        table.insert(buttons, {
-            {
-                text = self.plugin.loc:t("close") or "Close",
+        local action_row = {}
+        if opts and opts.restore_menu_cb then
+            table.insert(action_row, {
+                text = self.plugin.loc:t("highlight_menu_btn") or "Highlight Menu",
                 callback = function()
                     UIManager:close(dialog)
+                    opts.restore_menu_cb()
                 end,
-            }
+            })
+        end
+        table.insert(action_row, {
+            text = self.plugin.loc:t("close") or "Close",
+            callback = function()
+                UIManager:close(dialog)
+            end,
         })
+        table.insert(buttons, action_row)
 
         dialog = ButtonDialog:new{
             title = prompt,

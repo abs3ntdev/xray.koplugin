@@ -134,6 +134,10 @@ function XRayPlugin:init()
     if self.ai_helper.settings and self.ai_helper.settings.xray_mode_enabled ~= nil then
         self.xray_mode_enabled = self.ai_helper.settings.xray_mode_enabled
     end
+    self.xray_auto_popup = false
+    if self.ai_helper.settings and self.ai_helper.settings.xray_auto_popup ~= nil then
+        self.xray_auto_popup = (self.ai_helper.settings.xray_auto_popup == true)
+    end
 
     -- Auto-fetch on chapter change (session state)
     self.last_auto_chapter = nil
@@ -240,6 +244,10 @@ function XRayPlugin:init()
                 show_func = function() return self.xray_mode_enabled end,
                 callback = self:_buildXRayDictButton(nil).callback,
             })
+        end
+
+        if self.mountHighlightHandler then
+            self:mountHighlightHandler()
         end
     end
     
@@ -396,6 +404,103 @@ function XRayPlugin:onDictButtonsReady(dict_popup, dict_buttons)
     end
 end
 
+function XRayPlugin:mountHighlightHandler()
+    local hl = self.ui and self.ui.highlight
+    if not hl or hl._xray_highlight_wrapped then return end
+    local plugin = self
+
+    local orig_show_menu = hl.onShowHighlightMenu
+    local orig_lookup_word = hl.lookupDictWord
+    hl._xray_orig_onShowHighlightMenu = orig_show_menu
+    hl._xray_orig_lookupDictWord = orig_lookup_word
+
+    hl.onShowHighlightMenu = function(hl_self, index)
+        if not index and not plugin._bypass_auto_popup and plugin:_tryAutoPopupHighlight(hl_self, "highlight_menu") then
+            return
+        end
+        if orig_show_menu then
+            return orig_show_menu(hl_self, index)
+        end
+    end
+
+    hl.lookupDictWord = function(hl_self, ...)
+        if not plugin._bypass_auto_popup and plugin:_tryAutoPopupHighlight(hl_self, "dict_word") then
+            return
+        end
+        if orig_lookup_word then
+            return orig_lookup_word(hl_self, ...)
+        end
+    end
+
+    hl._xray_highlight_wrapped = true
+end
+
+function XRayPlugin:_tryAutoPopupHighlight(hl_self, trigger_source)
+    if self.destroyed or not self.xray_mode_enabled or not self.xray_auto_popup or not self.lookup_manager then
+        return false
+    end
+
+    local sel = hl_self and hl_self.selected_text
+    if not sel or type(sel) ~= "table" then return false end
+    local text = sel.text
+    if type(text) ~= "string" or text == "" then return false end
+
+    local matches = self.lookup_manager:lookupAutoPopup(text)
+    if not matches or #matches == 0 then
+        return false
+    end
+
+    local function copyTable(t)
+        if type(t) ~= "table" then return t end
+        local res = {}
+        for k, v in pairs(t) do res[k] = v end
+        return res
+    end
+
+    local saved_state = {
+        selected_text = copyTable(hl_self.selected_text),
+        hold_pos = copyTable(hl_self.hold_pos),
+        selected_link = hl_self.selected_link,
+        selected_text_start_xpointer = hl_self.selected_text_start_xpointer,
+    }
+
+    local restore_menu_cb = function()
+        if self.destroyed or not self.ui or not self.ui.highlight then return end
+        local hl = self.ui.highlight
+        hl.selected_text = saved_state.selected_text
+        hl.hold_pos = saved_state.hold_pos
+        hl.selected_link = saved_state.selected_link
+        hl.selected_text_start_xpointer = saved_state.selected_text_start_xpointer
+        hl.is_word_selection = false
+        self._bypass_auto_popup = true
+        pcall(function()
+            if hl._xray_orig_onShowHighlightMenu then
+                hl._xray_orig_onShowHighlightMenu(hl)
+            elseif hl.onShowHighlightMenu then
+                hl:onShowHighlightMenu()
+            end
+        end)
+        self._bypass_auto_popup = false
+    end
+
+    if hl_self.clear then
+        pcall(function() hl_self:clear() end)
+    end
+    if self.ui and self.ui.handleEvent then
+        local ok_ev, Event = pcall(require, "ui/event")
+        if ok_ev and Event then
+            self.ui:handleEvent(Event:new("ClearSelection"))
+        end
+    end
+
+    self.lookup_manager:handleLookup(sel.text, sel.pos0, sel.pos1, {
+        from_auto_popup = true,
+        restore_menu_cb = restore_menu_cb,
+        candidates = matches,
+    })
+    return true
+end
+
 function XRayPlugin:log(msg)
     XRayLogger:log(msg)
 end
@@ -413,6 +518,26 @@ function XRayPlugin:_getFlatToc()
         self._cached_toc = utils:flattenTOC(raw_toc)
     end
     return self._cached_toc
+end
+
+function XRayPlugin:onLowMemory()
+    self:log("XRayPlugin: onLowMemory received. Releasing caches.")
+    if self.clearTileCaches then
+        pcall(function() self:clearTileCaches() end)
+    end
+    if self.clearSpineCache then
+        pcall(function() self:clearSpineCache() end)
+    end
+    self._cached_toc = nil
+    local ChapterAnalyzer = require(plugin_path .. "xray_chapteranalyzer")
+    if ChapterAnalyzer and ChapterAnalyzer.clearCache then
+        pcall(function() ChapterAnalyzer:clearCache() end)
+    end
+    if self.is_sequential_scan_active then
+        self:log("XRayPlugin: Halting background sequential prefetch due to low memory event.")
+        self.active_sequential_cancelled = true
+    end
+    collectgarbage("collect")
 end
 
 function XRayPlugin:onReaderReady()
@@ -439,6 +564,7 @@ function XRayPlugin:onReaderReady()
         if self.destroyed or not self.ui or not self.ui.document then return end
         if self.mountUnderlineOverlay then self:mountUnderlineOverlay() end
         if self.mountTapHandler then self:mountTapHandler() end
+        if self.mountHighlightHandler then self:mountHighlightHandler() end
         
         -- Load cache immediately if available without doing a full scan
         if self.loadUnitCache and settings.unit_converter_enabled ~= false then
@@ -698,6 +824,7 @@ function XRayPlugin:scheduleBackgroundCatchUp(delay)
 
         -- Busy check: defer if another AI request or unit scan is running
         if self.bg_fetch_pending or self.bg_fetch_active or self._unit_scan_in_progress
+                or self.is_sequential_scan_active
                 or self._active_ai_cancel or (self.ai_helper and self.ai_helper._async_child_pid) then
             self:scheduleBackgroundCatchUp(10)
             return
@@ -764,6 +891,54 @@ function XRayPlugin:scheduleBackgroundCatchUp(delay)
     UIManager:scheduleIn(delay or 3, callback)
 end
 
+function XRayPlugin:checkPrefetchHorizon()
+    if self.destroyed or not self.ui or not self.ui.document then return end
+    if self.is_sequential_scan_active then return end
+    local horizon = self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.prefetch_horizon_chapters or 0
+    if horizon <= 0 then return end
+    if not self.ai_helper or not self.ai_helper.hasApiKey or not self.ai_helper:hasApiKey() then return end
+
+    local cur_page = self.getCurrentDocPage and self:getCurrentDocPage() or (self.ui.getCurrentPage and self.ui:getCurrentPage()) or 1
+
+    local toc = self:_getFlatToc()
+    if not toc or #toc == 0 then return end
+
+    local ChapterAnalyzer = require(plugin_path .. "xray_chapteranalyzer")
+    local total_pages = self.ui and self.ui.document and self.ui.document.getPageCount and self.ui.document:getPageCount() or 0
+    local expanded_toc = (ChapterAnalyzer and ChapterAnalyzer.expandOversizedTocChapters) and ChapterAnalyzer:expandOversizedTocChapters(toc, total_pages, 60) or toc
+
+    local cur_chap_idx = 1
+    for i, ch in ipairs(expanded_toc) do
+        if ch.page and ch.page <= cur_page then
+            cur_chap_idx = i
+        else
+            break
+        end
+    end
+
+    local target_chapters = {}
+    local end_idx = math.min(#expanded_toc, cur_chap_idx + horizon)
+    for i = cur_chap_idx + 1, end_idx do
+        local ch = expanded_toc[i]
+        if ch and not (self.isNonNarrativeChapter and self:isNonNarrativeChapter(ch.title or ch.parent_title or "")) then
+            ch.toc_index = i
+            local unique_id = (ch.title or ("Chapter " .. tostring(i))) .. "_" .. tostring(ch.page)
+            self.chapters_fetched = self.chapters_fetched or {}
+            if not self.chapters_fetched[unique_id] then
+                table.insert(target_chapters, ch)
+            end
+        end
+    end
+
+    local cur_chap_name = expanded_toc[cur_chap_idx] and (expanded_toc[cur_chap_idx].parent_title or expanded_toc[cur_chap_idx].title) or "Unknown"
+    self:log(string.format("XRayPlugin: Horizon check - Current page: %d (Chap %d: '%s'), Horizon: +%d chapters, Queued: %d upcoming chapters.",
+        cur_page, cur_chap_idx, tostring(cur_chap_name), horizon, #target_chapters))
+
+    if #target_chapters > 0 then
+        self:queueSequentialChapterScan(target_chapters, false)
+    end
+end
+
 function XRayPlugin:onNetworkConnected()
     local document = self.ui and self.ui.document
     if not document then return end
@@ -777,6 +952,10 @@ function XRayPlugin:onNetworkConnected()
     if self.pending_background_fetch or (spoiler_setting == "full_book" and self:isCatchUpNeeded()) then
         self.pending_background_fetch = true
         self:scheduleBackgroundCatchUp(3)
+    end
+
+    if self.checkPrefetchHorizon then
+        self:checkPrefetchHorizon()
     end
 end
 
@@ -842,7 +1021,7 @@ function XRayPlugin:onPageUpdate(pageno)
                 end
                 chapter_title = chapter_title or ("Page " .. tostring(pageno))
 
-                if not (self.bg_fetch_pending or self.bg_fetch_active) then
+                if not (self.bg_fetch_pending or self.bg_fetch_active or self.is_sequential_scan_active) then
                     self.bg_fetch_pending = true
                     self:clearChapterFetchTimer()
                     local cb
@@ -869,7 +1048,7 @@ function XRayPlugin:onPageUpdate(pageno)
         self.last_bg_fetch_page = pageno
 
         -- Debounce: ignore if a fetch is already scheduled or active
-        if self.bg_fetch_pending or self.bg_fetch_active then 
+        if self.bg_fetch_pending or self.bg_fetch_active or self.is_sequential_scan_active then 
             self:log("XRayPlugin: Fetch already pending or active. Debouncing Ultra mode trigger.")
             return 
         end
@@ -968,6 +1147,9 @@ function XRayPlugin:onPageUpdate(pageno)
                 self:scheduleBackgroundCatchUp(5)
             end
         end
+        if self.checkPrefetchHorizon then
+            self:checkPrefetchHorizon()
+        end
         return
     end
 
@@ -981,6 +1163,9 @@ function XRayPlugin:onPageUpdate(pageno)
 
     -- Already fetched this chapter this session?
     if self.chapters_fetched[unique_id] then 
+        if self.checkPrefetchHorizon then
+            self:checkPrefetchHorizon()
+        end
         return 
     end
 
@@ -989,7 +1174,7 @@ function XRayPlugin:onPageUpdate(pageno)
     self.last_auto_chapter = unique_id
 
     -- Debounce: ignore if a fetch is already scheduled
-    if self.bg_fetch_pending or self.bg_fetch_active then 
+    if self.bg_fetch_pending or self.bg_fetch_active or self.is_sequential_scan_active then 
         return 
     end
     self.bg_fetch_pending = true
@@ -1018,7 +1203,7 @@ function XRayPlugin:triggerBackgroundMergeFetch(chapter_title)
         end)
         return
     end
-    if self.bg_fetch_active then return end
+    if self.bg_fetch_active or self.is_sequential_scan_active then return end
     if not self.ui or not self.ui.document then return end
 
 
@@ -1033,7 +1218,7 @@ function XRayPlugin:triggerBackgroundMergeFetch(chapter_title)
         -- Foreground requests own the single async child slot and its global
         -- cancel handler. Do not consume the background cooldown or disturb
         -- that ownership while one is active.
-        if self._active_ai_cancel or (self.ai_helper and self.ai_helper._async_child_pid) then
+        if self._active_ai_cancel or (self.ai_helper and self.ai_helper._async_child_pid) or self.is_sequential_scan_active then
             self:log("XRayPlugin: Skipping background fetch because another AI request is active")
             return
         end
@@ -1273,7 +1458,9 @@ function XRayPlugin:autoLoadCache()
                 deathDate = cached_data.author_death
             }
         end
-        if #self.characters > 0 then self.xray_mode_enabled = true end
+        if #self.characters > 0 and (not self.ai_helper or not self.ai_helper.settings or self.ai_helper.settings.xray_mode_enabled ~= false) then
+            self.xray_mode_enabled = true
+        end
 
         -- Synchronize loaded book data to SeriesCache if part of a series
         if self.series_manager and (cached_data.series_slug or cached_data.series or cached_data.series_name or (self.ui and self.ui.document)) then
@@ -1430,6 +1617,27 @@ function XRayPlugin:getSubMenuItems()
         separator = true,
     })
 
+    local function getPregenerateMenuText()
+        if self.is_sequential_scan_active then
+            local done = self.active_sequential_completed_chapters or self.active_sequential_completed or 0
+            local total = self.active_sequential_total_chapters or self.active_sequential_total or 0
+            local fmt = (self.loc and self.loc:t("pregeneration_progress")) or "Pre-generating X-Ray: Chapter %d of %d..."
+            return fmt:format(done, total)
+        else
+            return self.loc:t("menu_pregenerate_book") or "Pre-generate Entire Book…"
+        end
+    end
+
+    table.insert(items, {
+        text = getPregenerateMenuText(),
+        text_func = getPregenerateMenuText,
+        keep_menu_open = true,
+        callback = function()
+            self:startFullBookPreGeneration()
+        end,
+        separator = true,
+    })
+
     self.current_xray_menu_table = items
     table.insert(items, {
         text = self.loc:t("menu_settings") or "Settings",
@@ -1483,6 +1691,11 @@ function XRayPlugin:getSubMenuItems()
                         text = self.loc:t("mentions_setting_title") or "Mentions Settings",
                         keep_menu_open = true,
                         callback = function() self:showMentionsSettings() end,
+                    },
+                    {
+                        text = self.loc:t("menu_evolution_settings") or "Story Arc Settings",
+                        keep_menu_open = true,
+                        callback = function() self:showEvolutionSettings() end,
                     },
                 }
             },
@@ -1572,6 +1785,11 @@ function XRayPlugin:getSubMenuItems()
                         text = self.loc:t("spoiler_preference_title") or "Spoiler Settings",
                         keep_menu_open = true,
                         callback = function() self:showSpoilerSettings() end,
+                    },
+                    {
+                        text = self.loc:t("menu_prefetch_horizon") or "Prefetch Horizon (Offline Readers)",
+                        keep_menu_open = true,
+                        callback = function() self:showPrefetchHorizonSettings() end,
                     },
                 }
             },
@@ -2044,66 +2262,118 @@ function XRayPlugin:showUnitStyleCard()
             alignment = "center",
         }
         local sample_size = sample_text:getSize()
-        local sample_w = (sample_size and sample_size.w or 200) + sc(20)
-        local sample_h = sample_size and sample_size.h or 30
+        local underline_color_val
+        if underline_intensity == "light" then
+            underline_color_val = Blitbuffer.Color8(200)
+        elseif underline_intensity == "dark" then
+            underline_color_val = Blitbuffer.Color8(30)
+        else
+            underline_color_val = Blitbuffer.Color8(120)
+        end
 
-        local preview_line = UnderlinePreview:new{
-            width = sample_w,
-            height = sample_h + sc(12),
+        local w_walked = 50
+        local w_miles = 50
+        if RenderText and RenderText.sizeUtf8Text then
+            local s_walked = RenderText:sizeUtf8Text(0, 9999, preview_face, "walked ", false, false)
+            if s_walked and s_walked.x then w_walked = s_walked.x end
+            local s_miles = RenderText:sizeUtf8Text(0, 9999, preview_face, "2 miles", false, false)
+            if s_miles and s_miles.x then w_miles = s_miles.x end
+        end
+
+        local underline_widget = UnderlinePreview:new{
+            width = w_miles,
+            height = sample_size.h,
             underline_style = underline_style,
             underline_thickness = underline_thickness,
+            underline_color_val = underline_color_val,
+            overlap_offset = { w_walked, 0 },
             plugin = self,
         }
 
-        local popup_bubble = FrameContainer:new{
-            padding = sc(4),
-            padding_h = sc(12),
-            bordersize = sc(1),
-            color = Blitbuffer.COLOR_BLACK,
+        local preview_example = OverlapGroup:new{
+            dimen = sample_size,
+            sample_text,
+            underline_widget,
+        }
+
+        local tooltip_text = "3.22 km"
+        local tooltip_face = Font:getFace("cfont", fs)
+        local pad_h = 28
+        local pad_v = math.floor(fs * 0.55)
+        local text_size = RenderText and RenderText.sizeUtf8Text and RenderText:sizeUtf8Text(0, 9999, tooltip_face, tooltip_text, false, false)
+        local text_w = text_size and text_size.x or 70
+        local tooltip_max_w = dialog_w - sc(64)
+        local popup_w = math.min(tooltip_max_w, text_w + pad_h * 2)
+
+        local tb = TextWidget:new{
+            text = tooltip_text,
+            face = tooltip_face,
+        }
+
+        local border_sz = sc(2)
+        local preview_tooltip = FrameContainer:new{
             background = Blitbuffer.COLOR_WHITE,
-            radius = sc(2),
-            TextWidget:new{
-                text = "3.22 km",
-                face = Font:getFace("cfont", ui_font_size),
-                alignment = "center",
+            bordersize = border_sz,
+            color = Blitbuffer.COLOR_DARK_GRAY,
+            radius = 0,
+            padding_top = pad_v,
+            padding_bottom = pad_v,
+            padding_left = pad_h,
+            padding_right = pad_h,
+            width = popup_w,
+            VerticalGroup:new{
+                align = "center",
+                tb
             }
         }
 
-        local arrow_widget = self._PointerArrow and self._PointerArrow:new{
-            point_down = true,
-            width = sc(12),
-            height = sc(6),
-            color = Blitbuffer.COLOR_BLACK,
-        }
+        local card_size = preview_tooltip:getSize()
+        local card_h = card_size.h
 
-        local preview_bubble_vg = VerticalGroup:new{
-            align = "center",
-            popup_bubble,
+        local arrow_w = sc(16)
+        local arrow_h = sc(8)
+        local _PointerArrow = self._PointerArrow or (require(plugin_path .. "xray_unitscanner")._PointerArrow)
+        local preview_arrow = _PointerArrow and _PointerArrow:new{
+            width = arrow_w,
+            height = arrow_h,
+            direction = "down",
+            apex_offset = arrow_w / 2,
+            border_size = border_sz,
+            border_color = Blitbuffer.COLOR_DARK_GRAY,
+            fill_color = Blitbuffer.COLOR_WHITE,
         }
-        if arrow_widget then
-            table.insert(preview_bubble_vg, arrow_widget)
+        if preview_arrow then
+            preview_arrow.overlap_offset = { math.floor((popup_w - arrow_w) / 2), card_h - border_sz }
         end
 
-        local preview_content = VerticalGroup:new{
-            align = "center",
-            preview_bubble_vg,
-            VerticalSpan:new{ width = sc(2) },
-            sample_text,
-            VerticalSpan:new{ width = sc(1) },
-            preview_line,
-        }
+        local tooltip_with_arrow
+        if preview_arrow then
+            tooltip_with_arrow = OverlapGroup:new{
+                dimen = Geom:new{ w = popup_w, h = card_h + arrow_h - border_sz },
+                preview_tooltip,
+                preview_arrow,
+            }
+        else
+            tooltip_with_arrow = preview_tooltip
+        end
 
-        local preview_panel = CenterContainer:new{
-            dimen = Geom:new{ w = dialog_w - sc(28), h = sc(85) },
-            FrameContainer:new{
-                bordersize = xray_theme.border_preview,
-                color = xray_theme.color_border,
-                padding = sc(8),
-                background = Blitbuffer.COLOR_WHITE,
-                width = dialog_w - sc(28),
+        local preview_panel = FrameContainer:new{
+            padding = sc(8),
+            radius = xray_theme.radius_window,
+            bordersize = xray_theme.border_preview,
+            color = xray_theme.color_border,
+            background = Blitbuffer.COLOR_WHITE,
+            width = dialog_w - sc(28),
+            VerticalGroup:new{
+                align = "center",
+                HorizontalGroup:new{
+                    align = "center",
+                    tooltip_with_arrow
+                },
+                VerticalSpan:new{ width = sc(2) },
                 CenterContainer:new{
-                    dimen = Geom:new{ w = dialog_w - sc(44), h = sc(72) },
-                    preview_content
+                    dimen = Geom:new{ w = dialog_w - sc(44), h = sample_size.h },
+                    preview_example
                 }
             }
         }
@@ -2438,6 +2708,9 @@ end
 -- Resolves the exact touch menu path (e.g. "4.1.8.6") to an X-Ray submenu
 local function findXRayMenuPath(self, target_key)
     if not self.ui or not self.ui.menu then return nil end
+    if not target_key or target_key == "xray" then
+        return "xray"
+    end
     local reader_menu = self.ui.menu
     if not reader_menu.tab_item_table then
         reader_menu:setUpdateItemTable()
@@ -2491,18 +2764,75 @@ end
 
 function XRayPlugin:openReaderMenuToPath(target_key)
     local UIManager = require("ui/uimanager")
+    if self.xray_menu then
+        pcall(function() UIManager:close(self.xray_menu) end)
+        self.xray_menu = nil
+    end
+
     UIManager:scheduleIn(0.1, function()
         if self.destroyed or not self.ui or not self.ui.document then return end
-        if self.ui and self.ui.menu then
-            if not self.ui.menu.menu_container then
-                self.ui.menu:onShowMenu()
+        if not (self.ui and self.ui.menu) then
+            if self.showFullXRayMenuStandalone then
+                self:showFullXRayMenuStandalone()
             end
-            local touch_menu = self.ui.menu.menu_container and self.ui.menu.menu_container[1]
-            if touch_menu then
-                local path = findXRayMenuPath(self, target_key)
-                if path then
-                    touch_menu:openMenu(path, false)
+            return
+        end
+
+        local reader_menu = self.ui.menu
+        if not reader_menu.tab_item_table then
+            reader_menu:setUpdateItemTable()
+        end
+        local tab_item_table = reader_menu.tab_item_table
+        if not tab_item_table then
+            if self.showFullXRayMenuStandalone then
+                self:showFullXRayMenuStandalone()
+            end
+            return
+        end
+
+        local xray_tab_idx, xray_item_idx, xray_item
+        for tab_idx, tab_items in ipairs(tab_item_table) do
+            for item_idx, item in ipairs(tab_items) do
+                if item.id == "xray" then
+                    xray_tab_idx = tab_idx
+                    xray_item_idx = item_idx
+                    xray_item = item
+                    break
                 end
+            end
+            if xray_tab_idx then break end
+        end
+
+        if not xray_tab_idx or not xray_item then
+            self:log("XRayPlugin: Unable to locate X-Ray in reader menu, falling back to standalone menu")
+            if self.showFullXRayMenuStandalone then
+                self:showFullXRayMenuStandalone()
+            end
+            return
+        end
+
+        if not reader_menu.menu_container then
+            reader_menu:onShowMenu(xray_tab_idx)
+        end
+
+        local touch_menu = reader_menu.menu_container and reader_menu.menu_container[1]
+        if not touch_menu then return end
+
+        if not target_key or target_key == "xray" then
+            if touch_menu.switchMenuTab then
+                touch_menu:switchMenuTab(xray_tab_idx)
+                if touch_menu.bar and touch_menu.bar.switchToTab then
+                    touch_menu.bar:switchToTab(xray_tab_idx)
+                end
+            end
+            xray_item.idx = xray_item.idx or xray_item_idx
+            if touch_menu.onMenuSelect then
+                touch_menu:onMenuSelect(xray_item)
+            end
+        else
+            local path = findXRayMenuPath(self, target_key)
+            if path and touch_menu.openMenu then
+                touch_menu:openMenu(path, false)
             end
         end
     end)

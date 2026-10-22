@@ -162,7 +162,7 @@ describe("AI Reasoning Logic", function()
         end)
 
         it("should include thinking block for Claude and omit assistant prefill when reasoning is set", function()
-            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-sonnet-5.5" }
+            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-sonnet-5-5" }
             AIHelper.settings.reasoning_effort = "medium"
             
             local requests = AIHelper:buildComprehensiveRequest("Title", "Author", {})
@@ -174,6 +174,19 @@ describe("AI Reasoning Logic", function()
             assert.are.equal(12096, body.max_tokens)
             assert.are.equal(1, #body.messages)
             assert.are.equal("user", body.messages[1].role)
+        end)
+
+        it("should cap thinking budget for claude-haiku-5-5", function()
+            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-haiku-5-5" }
+            AIHelper.settings.reasoning_effort = "high"
+            
+            local requests = AIHelper:buildComprehensiveRequest("Title", "Author", {})
+            local body = json.decode(requests[1].body)
+            
+            assert.is_not_nil(body.thinking)
+            assert.are.equal("enabled", body.thinking.type)
+            assert.are.equal(2000, body.thinking.budget_tokens)
+            assert.are.equal(8192, body.max_tokens)
         end)
     end)
 

@@ -908,6 +908,31 @@ describe("AIHelper", function()
             assert.are.equal("claude-haiku-4-5", AIHelper.settings.claude_model)
         end)
 
+        it("should migrate claude-sonnet-5.5 to claude-sonnet-5-5", function()
+            local json = require("json")
+            local mock_settings = {
+                primary_ai = { provider = "claude", model = "claude-sonnet-5.5" },
+                claude_model = "claude-sonnet-5.5",
+            }
+
+            local old_open = io.open
+            io.open = function(path, mode)
+                if path:find("settings.json") and (mode == "r" or mode == nil) then
+                    return {
+                        read = function() return json.encode(mock_settings) end,
+                        close = function() end
+                    }
+                end
+                return old_open(path, mode)
+            end
+
+            AIHelper:loadSettings()
+            io.open = old_open
+
+            assert.are.equal("claude-sonnet-5-5", AIHelper.settings.primary_ai.model)
+            assert.are.equal("claude-sonnet-5-5", AIHelper.settings.claude_model)
+        end)
+
         it("should migrate legacy DeepSeek models to deepseek-flash", function()
             local json = require("json")
             local mock_settings = {
@@ -1115,12 +1140,19 @@ custom1_model = google/gemini-2.5-flash
             req = json.decode(captured_body)
             assert.are.equal("claude-sonnet-5", req.model)
 
-            -- Case 5: claude-sonnet-5.5 is respected
-            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-sonnet-5.5" }
+            -- Case 5: claude-sonnet-5-5 is respected
+            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-sonnet-5-5" }
             res = AIHelper:validateProviderKey("claude")
             assert.is_true(res.ok)
             req = json.decode(captured_body)
-            assert.are.equal("claude-sonnet-5.5", req.model)
+            assert.are.equal("claude-sonnet-5-5", req.model)
+
+            -- Case 6: claude-haiku-5-5 is respected
+            AIHelper.settings.primary_ai = { provider = "claude", model = "claude-haiku-5-5" }
+            res = AIHelper:validateProviderKey("claude")
+            assert.is_true(res.ok)
+            req = json.decode(captured_body)
+            assert.are.equal("claude-haiku-5-5", req.model)
 
             AIHelper.makeRequest = original_makeRequest
         end)

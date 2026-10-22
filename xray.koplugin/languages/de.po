@@ -237,6 +237,10 @@ msgstr "Sind Sie sicher, dass Sie alle konfigurierten API-Schlüssel und benutze
 msgid "confirm_clear_single_key"
 msgstr "Den konfigurierten API-Schlüssel für %s löschen?"
 
+# en-hash: d3d2e617335f08df83599665eef8a418
+msgid "continue_in_background"
+msgstr "Schließen"
+
 # en-hash: 9cfefed8fb9497baa5cd519d7d2bb5d7
 msgid "current_language"
 msgstr "de"
@@ -469,6 +473,22 @@ msgstr "Ein unerwarteter Fehler ist aufgetreten: %s"
 msgid "error_unknown_title"
 msgstr "Abruf fehlgeschlagen"
 
+# en-hash: b9f5c797ebbf55adccdd8539a65a0241
+msgid "evolution_disabled"
+msgstr "Deaktiviert"
+
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "evolution_enabled"
+msgstr "Aktiviert"
+
+# en-hash: a60a71af2508ebb8958b115204d602f8
+msgid "evolution_setting_desc"
+msgstr "Die Entitäts-Evolution verfolgt, wie sich Charaktere, Orte und Begriffe über Kapitel und Meilensteine hinweg entwickeln.\n\nDas Deaktivieren blendet die Evolutions-Schaltfläche aus Such-Popups und Detail-Dialogen aus."
+
+# en-hash: 8a193135a3bc4b4998dfc09f31602b3f
+msgid "evolution_title"
+msgstr "Entwicklung"
+
 # en-hash: bd109e1437d54acaada2eb31eebd39d2
 msgid "extracting_more_characters"
 msgstr "Extrahiere zusätzliche Charaktere..."
@@ -520,6 +540,30 @@ msgstr "Vollständiger Buch-Modus"
 # en-hash: 224900ca5b99a949b6fe8a5c0360f5ff
 msgid "gemini_key_hint"
 msgstr "Geben Sie Ihren kostenlosen Gemini-Schlüssel aus Google AI Studio ein (beginnt mit AQ. oder AIzaSy...):"
+
+# en-hash: e743adccf6972021e1bbf252702394d8
+msgid "highlight_menu_btn"
+msgstr "Markierungsmenü"
+
+# en-hash: f850d33c4743163bf7e06b8fde0855a6
+msgid "horizon_1"
+msgstr "1 Kapitel voraus"
+
+# en-hash: b93160631e7a4c86e26e599b133cf5ef
+msgid "horizon_2"
+msgstr "2 Kapitel voraus"
+
+# en-hash: aef4a7c7b9ebcb82dca9ac6a8ebb0ba1
+msgid "horizon_3"
+msgstr "3 Kapitel voraus"
+
+# en-hash: 08b431a0304ccf08e5e44cd9c5ef91b5
+msgid "horizon_5"
+msgstr "5 Kapitel voraus"
+
+# en-hash: 0ebfde96e47052f9ce95f781fada228a
+msgid "horizon_off"
+msgstr "Aus (nur aktuell)"
 
 # en-hash: 33dca68e340b8d6c21472341130cf45a
 msgid "illustration"
@@ -917,6 +961,10 @@ msgstr "Benutzerdefiniertes Modell eingeben..."
 msgid "menu_entity_ui_mode"
 msgstr "Stil der Entitätsbeschreibung"
 
+# en-hash: 54c388986a89f527cc5cbdcde63a7c61
+msgid "menu_evolution_settings"
+msgstr "Evolutions-Einstellungen"
+
 # en-hash: c1b19dc83bcbcf0c634af5164ac2f24f
 msgid "menu_fetch_author"
 msgstr "Autor-Info abrufen (KI)"
@@ -984,6 +1032,14 @@ msgstr "%s-Schlüssel aus Zwischenablage einfügen"
 # en-hash: f3ab2ad220b458e8cd144bc464038505
 msgid "menu_popup_font_size"
 msgstr "Popup-Schriftgröße"
+
+# en-hash: 48a3995863adcc59ade43533a3a4f7ff
+msgid "menu_prefetch_horizon"
+msgstr "Vorab-Horizont (für Offline-Leser)"
+
+# en-hash: 523ae7a3cffca13a26ef27ca7f45b5a3
+msgid "menu_pregenerate_book"
+msgstr "Buch komplett vorab generieren"
 
 # en-hash: f0e87a49b3cb82e4faabd5fc3729e8e8
 msgid "menu_primary_ai_model"
@@ -1169,6 +1225,10 @@ msgstr "KI API-Key nicht gesetzt!\n\nGeben Sie den API-Key hier ein:\nMenü → 
 msgid "no_author_data_fetch"
 msgstr "Keine Autor-Info verfügbar.\n\nMöchten Sie diese von der KI abrufen?"
 
+# en-hash: 1f291814f41100bf065758282bfb1f3e
+msgid "no_chapters_found"
+msgstr "Keine erzählenden Kapitel gefunden."
+
 # en-hash: 18b36cd276b2c5afa9f9cdf198876b20
 msgid "no_character_data"
 msgstr "Keine Figuren gefunden."
@@ -1176,6 +1236,10 @@ msgstr "Keine Figuren gefunden."
 # en-hash: 80a4905228688f8ad8ec996803f60ffb
 msgid "no_data_prompt"
 msgstr "Keine X-Ray-Daten für dieses Buch gefunden. Möchten Sie diese jetzt von der KI abrufen?"
+
+# en-hash: 8c918ead3a0aa5e6b949bf890bb25cb3
+msgid "no_document"
+msgstr "Kein Dokument geöffnet."
 
 # en-hash: f66eabdf2cb216138e5c20cd3f9d890d
 msgid "no_duplicates_found"
@@ -1221,6 +1285,10 @@ msgstr "Noch keine Begriffsdaten vorhanden. Bitte zuerst 'Fetch X-Ray Data' verw
 msgid "no_timeline_data"
 msgstr "Noch keine Timeline-Daten.\n\nBitte nutzen Sie zuerst 'X-Ray Daten abrufen'.\n\nKI wird wichtige Ereignisse in chronologischer Reihenfolge anzeigen."
 
+# en-hash: 5e629935d4d1f381d41aa5df7596bdd2
+msgid "no_toc_found"
+msgstr "Kein Inhaltsverzeichnis in diesem Dokument gefunden."
+
 # en-hash: e0aa021e21dddbd6d8cecec71e9cf564
 msgid "ok"
 msgstr "OK"
@@ -1228,6 +1296,10 @@ msgstr "OK"
 # en-hash: 386b384e3eec6bf9bf55d32b5018de15
 msgid "pair_rejected"
 msgstr "Pair marked as not a duplicate."
+
+# en-hash: 98ba558bb9ff6031db51cfb88b0b7ca2
+msgid "past_evolution"
+msgstr "Handlungsstrang"
 
 # en-hash: b8d4677ac13de48defd22ae1a3fe2479
 msgid "paste_clipboard_confirm"
@@ -1289,6 +1361,30 @@ msgstr "Klein"
 msgid "popup_font_size_xlarge"
 msgstr "Sehr groß"
 
+# en-hash: 3a5b636cdae103a7041a4bd805a590b5
+msgid "prefetch_horizon_desc"
+msgstr "Kommende Kapitel im Hintergrund online vorab generieren, Beschreibungen bleiben spoilerfrei bis zum Erreichen:"
+
+# en-hash: dca66de2b9060580aeee1ad0b51381ac
+msgid "pregenerate_confirm_text"
+msgstr "Dies scannt und analysiert nacheinander alle %d Kapitel im Hintergrund. Neu entdeckte Charakterzustände, Orte und Glossarbegriffe bleiben spoilerfrei, bis Sie diese erreichen.\n\nFortfahren?"
+
+# en-hash: 8474e54bad0a6acdfa4c577f3cce833b
+msgid "pregeneration_complete"
+msgstr "Vorab-Generierung abgeschlossen!"
+
+# en-hash: b81790e75b057df58035bbf6a562fdd9
+msgid "pregeneration_progress"
+msgstr "X-Ray wird vorausgewählt: Kapitel %d von %d..."
+
+# en-hash: ce0e3b3cdea867bfaf5f6690cc447817
+msgid "pregeneration_started"
+msgstr "Vorab-Generierung im Hintergrund gestartet."
+
+# en-hash: 49c78fe423024d32c829cb336052531b
+msgid "pregeneration_stopped"
+msgstr "Vorabgenerierung gestoppt."
+
 # en-hash: 14230d11143a03f4330c6433d5032a9d
 msgid "prev"
 msgstr "Zurück"
@@ -1336,6 +1432,10 @@ msgstr "Dadurch werden alle zwischengespeicherten X-Ray-Daten für dieses Buch v
 # en-hash: 28d57012d4eada5bfcadc8447e1550ea
 msgid "rebuild_confirm_title"
 msgstr "X-Ray-Daten neu aufbauen"
+
+# en-hash: 63a6a88c066880c5ac42394a22803ca6
+msgid "refresh"
+msgstr "Aktualisieren"
 
 # en-hash: d98ac12774fca5c3cbaffe276840c55f
 msgid "reject_pair"
@@ -1465,9 +1565,17 @@ msgstr "Wählen Sie Ihre Spoiler-Einstellung für X-Ray-Daten:"
 msgid "spoiler_preference_title"
 msgstr "Spoiler-Einstellung"
 
+# en-hash: a6122a65eaa676f700ae68d393054a37
+msgid "start"
+msgstr "Start"
+
 # en-hash: 11a755d598c0c417f9a36758c3da7481
 msgid "stop"
 msgstr "Stoppen"
+
+# en-hash: cb70e7496d2ead7064f09a1e145d1822
+msgid "stop_pregeneration"
+msgstr "Vorabgenerierung stoppen"
 
 # en-hash: d725036d492c380f06f4eb32f5704bc9
 msgid "term_not_found"
@@ -1933,9 +2041,17 @@ msgstr "WILLKOMMEN BEI X-RAY"
 msgid "xray_disabled_label"
 msgstr "Deaktiviert"
 
-# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
-msgid "xray_enabled_label"
-msgstr "Aktiviert"
+# en-hash: f985e0d7d99a942354d25b3ca82e2dbd
+msgid "xray_mode_about"
+msgstr "Steuert die Integration von X-Ray bei der Textauswahl während des Lesens:\n\n• [B]Schaltfläche im Menü:[/B] Fügt ein 'X-Ray'-Symbol zu den Wörterbuch- und Markierungsmenüs von KOReader hinzu.\n• [B]Automatisches Popup bei Markierung:[/B] Öffnet sofort X-Ray, wenn Sie ein Wort oder einen Namen mit X-Ray-Daten auswählen, ohne das Markierungsmenü anzuzeigen. Wenn keine X-Ray-Daten gefunden werden, erscheint das normale Menü. Nutzen Sie die Schaltfläche 'Markierungsmenü' im Popup, um das Wort wie gewohnt zu markieren oder im Wörterbuch nachzuschlagen.\n• [B]Deaktiviert:[/B] Blendet die X-Ray-Suchschaltflächen im Text aus."
+
+# en-hash: 9c80703132b544548dbcfcf70e216f38
+msgid "xray_mode_auto_popup_label"
+msgstr "Automatisches Popup bei Markierung"
+
+# en-hash: eeb0673b42314cc5bb1f98be372c9eda
+msgid "xray_mode_button_label"
+msgstr "Schaltfläche im Menü (Standard)"
 
 # en-hash: aa3045baed0aad489f96655b14b671ac
 msgid "xray_mode_desc"
@@ -1945,7 +2061,11 @@ msgstr "Fügt eine 'X-Ray'-Schaltfläche zu Wörterbuch- und Auswahlmenüs für 
 msgid "yes"
 msgstr "Ja"
 
+
 # en-hash: d1591eafbd0b70a04df7b81673b81bfc
 msgid "menu_update_history"
 msgstr "Aktualisierungsverlauf"
 
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "xray_enabled_label"
+msgstr "Aktiviert"

@@ -11,7 +11,15 @@ local DocSettings = require("docsettings")
 local plugin_path = ((...) or ""):match("(.-)[^%.]+$") or ""
 local AIHelper = require(plugin_path .. "xray_aihelper")
 
+local CURRENT_CACHE_VERSION = "6.1"
+local SUPPORTED_CACHE_VERSIONS = {
+    ["6.0"] = true,
+    ["6.1"] = true,
+}
+
 local CacheManager = {
+    CURRENT_CACHE_VERSION = CURRENT_CACHE_VERSION,
+    SUPPORTED_CACHE_VERSIONS = SUPPORTED_CACHE_VERSIONS,
     _active_by_file = {},
     _pending_by_file = {},
 }
@@ -223,7 +231,7 @@ function CacheManager:saveCache(book_path, data)
     
     -- Add timestamp
     data.cached_at = os.time()
-    data.cache_version = "6.0"
+    data.cache_version = CURRENT_CACHE_VERSION
     
     local temp_file = cache_file .. ".tmp"
     local success, err = pcall(function()
@@ -235,7 +243,7 @@ function CacheManager:saveCache(book_path, data)
             return false
         end
         
-        f:write("-- X-Ray Cache v6.0\n")
+        f:write("-- X-Ray Cache v" .. CURRENT_CACHE_VERSION .. "\n")
         f:write("-- Generated: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n")
         f:write("return ")
         
@@ -309,7 +317,7 @@ function CacheManager:asyncSaveCache(book_path, data, on_done_cb)
     end
 
     data.cached_at = os.time()
-    data.cache_version = "6.0"
+    data.cache_version = CURRENT_CACHE_VERSION
 
     -- Check if an active save is already in progress for this cache file
     if CacheManager._active_by_file and CacheManager._active_by_file[cache_file] then
@@ -350,7 +358,7 @@ function CacheManager:_startAsyncSave(cache_file, book_path, data, callbacks)
             return false
         end
 
-        f:write("-- X-Ray Cache v6.0\n")
+        f:write("-- X-Ray Cache v" .. CURRENT_CACHE_VERSION .. "\n")
         f:write("-- Generated: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n")
         f:write("return ")
 
@@ -493,7 +501,7 @@ function CacheManager:_startAsyncSave(cache_file, book_path, data, callbacks)
     end
 
     local function child_logic(pid, write_fd)
-        local header = "-- X-Ray Cache v6.0\n-- Generated: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\nreturn "
+        local header = "-- X-Ray Cache v" .. CURRENT_CACHE_VERSION .. "\n-- Generated: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\nreturn "
         local serialized_str = header .. self:serialize(data, "") .. "\n"
         pcall(function()
             local f = io.open(cache_file, "w")
@@ -592,10 +600,10 @@ function CacheManager:loadCache(book_path)
         return nil
     end
     
-    -- Check cache version
-    if data.cache_version ~= "6.0" then
+    -- Check cache version (support current 6.1 and legacy 6.0)
+    if not SUPPORTED_CACHE_VERSIONS[data.cache_version] then
         logger.warn("CacheManager: Cache version mismatch, ignoring")
-        AIHelper:log("CacheManager: Cache version mismatch (found " .. tostring(data.cache_version) .. ", expected 6.0)")
+        AIHelper:log("CacheManager: Cache version mismatch (found " .. tostring(data.cache_version) .. ", expected 6.0 or 6.1)")
         return nil
     end
     

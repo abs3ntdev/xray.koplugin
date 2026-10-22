@@ -209,6 +209,50 @@ function SeriesManager.wholeIndicesBefore(index)
     return list
 end
 
+-- Helper to determine if a series cache book entry contains actual extracted X-Ray data
+function SeriesManager.hasBookEntities(book_entry)
+    if not book_entry or type(book_entry) ~= "table" then return false end
+    if book_entry.characters and type(book_entry.characters) == "table" and #book_entry.characters > 0 then
+        return true
+    end
+    if book_entry.locations and type(book_entry.locations) == "table" and #book_entry.locations > 0 then
+        return true
+    end
+    if book_entry.terms and type(book_entry.terms) == "table" and #book_entry.terms > 0 then
+        return true
+    end
+    if book_entry.timeline and type(book_entry.timeline) == "table" and #book_entry.timeline > 0 then
+        return true
+    end
+    return false
+end
+
+-- Candidate .sdr directories for an ebook path, accounting for KOReader's DocSettings
+-- behavior (which strips extension e.g. /path/Dawnshard.sdr) as well as legacy/test paths (/path/Dawnshard.epub.sdr).
+function SeriesManager:getCandidateSidecarDirs(book_path)
+    if not book_path or book_path == "" then return {} end
+    local dirs = {}
+    local seen = {}
+    local function addDir(d)
+        if d and d ~= "" and not seen[d] then
+            seen[d] = true
+            table.insert(dirs, d)
+        end
+    end
+
+    local ok_ds, DocSettings = pcall(require, "docsettings")
+    if ok_ds and DocSettings and DocSettings.getSidecarDir then
+        local ok_dir, ds_dir = pcall(DocSettings.getSidecarDir, DocSettings, book_path)
+        if ok_dir and ds_dir then addDir(ds_dir) end
+    end
+
+    local stripped = book_path:gsub("%.[^%.\\/]+$", "") .. ".sdr"
+    addDir(stripped)
+    addDir(book_path .. ".sdr")
+
+    return dirs
+end
+
 -- Sorted numeric keys of `books` (a SeriesCache books table) that precede `index`
 function SeriesManager.priorIndicesIn(books, index)
     local list = {}
@@ -222,6 +266,65 @@ function SeriesManager.priorIndicesIn(books, index)
     end
     table.sort(list)
     return list
+end
+
+-- Re-orders entity descriptions containing "[From Book ...]" sections so that
+-- the current book description appears FIRST, followed by each prior series description
+-- in chronological book order ([From Book 1], [From Book 2], etc.).
+function SeriesManager.reorderSeriesDescription(text)
+    if not text or type(text) ~= "string" or not text:find("%[From Book [%d%.]+%]") then
+        return text
+    end
+
+    local sections = {}
+    local pos = 1
+    local len = #text
+    while pos <= len do
+        local s_start, s_end = text:find("\n%s*\n+", pos)
+        local sec
+        if s_start then
+            sec = text:sub(pos, s_start - 1)
+            pos = s_end + 1
+        else
+            sec = text:sub(pos)
+            pos = len + 1
+        end
+        sec = sec:match("^%s*(.-)%s*$")
+        if sec and sec ~= "" then
+            table.insert(sections, sec)
+        end
+    end
+
+    local current_parts = {}
+    local prior_books = {}
+    local seen_prefixes = {}
+
+    for _, sec in ipairs(sections) do
+        local book_idx_str = sec:match("^%[From Book ([%d%.]+)%]")
+        if book_idx_str then
+            local b_num = tonumber(book_idx_str) or 0
+            if not seen_prefixes[book_idx_str] then
+                seen_prefixes[book_idx_str] = true
+                table.insert(prior_books, { idx = b_num, text = sec })
+            end
+        else
+            table.insert(current_parts, sec)
+        end
+    end
+
+    table.sort(prior_books, function(a, b)
+        return a.idx < b.idx
+    end)
+
+    local combined = {}
+    if #current_parts > 0 then
+        table.insert(combined, table.concat(current_parts, "\n\n"))
+    end
+    for _, pb in ipairs(prior_books) do
+        table.insert(combined, pb.text)
+    end
+
+    return table.concat(combined, "\n\n")
 end
 
 -- Books on the device whose metadata places them before the current book in this series
@@ -285,17 +388,47 @@ function SeriesManager:getPriorBookList(series_info, author, ai_helper, current_
         by_index[idx] = { index = idx, title = book.title, author = book.author or author, path = book.path }
     end
 
+    -- 1. Respect user configurations in SeriesCache (Manage Series entries or previously cached books)
+    local slug = series_info.slug or (series_info.name and makeSlug(series_info.name))
+    local cache_data = slug and self:loadSeriesCache(slug)
+    if cache_data and cache_data.books then
+        for idx, b in pairs(cache_data.books) do
+            local num_idx = tonumber(idx)
+            if num_idx and num_idx < series_info.index and b then
+                local b_path = cache_data.book_paths and cache_data.book_paths[num_idx]
+                addBook({
+                    index = num_idx,
+                    title = b.title or string.format("Book %s", SeriesManager.formatIndex(num_idx)),
+                    author = b.author or author,
+                    path = b_path,
+                })
+            end
+        end
+    end
+
+    -- 2. Add any prior books discovered locally on the device
     local local_books = self:findLocalPriorBooks(series_info, current_book_path)
     for _, b in ipairs(local_books) do addBook(b) end
     if #local_books > 0 then
         logger.info("XRayPlugin: Series: getPriorBookList: Found " .. tostring(#local_books) .. " prior books on device.")
     end
 
+    -- Detect if any known prior book has a fractional index (or if current book is fractional)
+    local has_fractional = (tonumber(series_info.index) and tonumber(series_info.index) ~= math.floor(tonumber(series_info.index)))
+    for idx, _ in pairs(by_index) do
+        local n = tonumber(idx)
+        if n and n ~= math.floor(n) then
+            has_fractional = true
+            break
+        end
+    end
+
     if ai_helper then
         logger.info("XRayPlugin: Series: getPriorBookList: Sending AI prior book list prompt.")
         local context = {
             series_name = series_info.name,
-            index = series_info.index
+            index = series_info.index,
+            has_fractional = has_fractional,
         }
         local prompt = ai_helper:createPrompt(nil, author, context, "prior_book_list")
         local result, err_code, err_msg = ai_helper:executeUnifiedRequest(prompt)
@@ -719,19 +852,15 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
 
     local changed = is_new_cache
 
-    local new_entry = {
-        title = title,
-        author = author,
-        characters = filterCurrentOnly(book_data.characters),
-        locations = filterCurrentOnly(book_data.locations),
-        terms = filterCurrentOnly(book_data.terms),
-        timeline = filterCurrentOnly(book_data.timeline),
-        source = "local_xray",
-    }
+    local has_new_entities = SeriesManager.hasBookEntities(book_data)
+    local prev_matching_entry = nil
 
     if book_path and book_path ~= "" then
         for other_idx, other_path in pairs(cache_data.book_paths) do
             if tonumber(other_idx) ~= index and other_path == book_path then
+                if not prev_matching_entry and SeriesManager.hasBookEntities(cache_data.books[other_idx]) then
+                    prev_matching_entry = cache_data.books[other_idx]
+                end
                 cache_data.book_paths[other_idx] = nil
                 cache_data.books[other_idx] = nil
                 changed = true
@@ -746,6 +875,9 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
     if title and title ~= "" then
         for other_idx, other_book in pairs(cache_data.books) do
             if tonumber(other_idx) ~= index and other_book and other_book.title and other_book.title:lower() == title:lower() then
+                if not prev_matching_entry and SeriesManager.hasBookEntities(other_book) then
+                    prev_matching_entry = other_book
+                end
                 cache_data.book_paths[other_idx] = nil
                 cache_data.books[other_idx] = nil
                 changed = true
@@ -753,7 +885,40 @@ function SeriesManager:syncBookToSeriesCache(slug, index, book_data, book_path, 
         end
     end
 
-    local existing_entry = cache_data.books[index]
+    local existing_entry = cache_data.books[index] or prev_matching_entry
+    local characters = filterCurrentOnly(book_data.characters)
+    local locations = filterCurrentOnly(book_data.locations)
+    local terms = filterCurrentOnly(book_data.terms)
+    local timeline = filterCurrentOnly(book_data.timeline)
+    local source = book_data.source
+    local timeline_summarized = book_data.timeline_summarized
+
+    if has_new_entities then
+        source = source or "local_xray"
+    elseif existing_entry and SeriesManager.hasBookEntities(existing_entry) then
+        characters = existing_entry.characters or characters
+        locations = existing_entry.locations or locations
+        terms = existing_entry.terms or terms
+        timeline = existing_entry.timeline or timeline
+        source = existing_entry.source or "local_xray"
+        if timeline_summarized == nil then
+            timeline_summarized = existing_entry.timeline_summarized
+        end
+    else
+        source = source or "roster"
+    end
+
+    local new_entry = {
+        title = title,
+        author = author,
+        characters = characters,
+        locations = locations,
+        terms = terms,
+        timeline = timeline,
+        source = source,
+        timeline_summarized = timeline_summarized,
+    }
+
     if not existing_entry or not deepEqual(existing_entry, new_entry) then
         cache_data.books[index] = new_entry
         changed = true
@@ -795,7 +960,7 @@ function SeriesManager:findLocalBookXRay(series_info, target_index, current_book
     local cache_data = self:loadSeriesCache(slug)
     if cache_data and cache_data.books and cache_data.books[target_index] then
         local entry = cache_data.books[target_index]
-        if entry.source == "local_xray" then
+        if entry.source == "local_xray" and SeriesManager.hasBookEntities(entry) then
             logger.info("SeriesManager: Found local_xray entry in SeriesCache for book index " .. tostring(target_index))
             return entry
         end
@@ -809,10 +974,14 @@ function SeriesManager:findLocalBookXRay(series_info, target_index, current_book
             loaded = cache_manager:loadCache(tracked_path)
         end
         if not loaded then
-            local sdr_file = tracked_path:gsub("[/\\][^/\\]+$", "") .. "/" .. tracked_path:match("([^/\\]+)$") .. ".sdr/xray_cache.lua"
-            loaded = safeLoadCacheFile(sdr_file)
+            local cand_dirs = self:getCandidateSidecarDirs(tracked_path)
+            for _, sdr_dir in ipairs(cand_dirs) do
+                local sdr_file = sdr_dir .. "/xray_cache.lua"
+                loaded = safeLoadCacheFile(sdr_file)
+                if loaded then break end
+            end
         end
-        if loaded and (loaded.characters or loaded.timeline) then
+        if loaded and SeriesManager.hasBookEntities(loaded) then
             self:syncBookToSeriesCache(slug, target_index, loaded, tracked_path)
             local updated = self:loadSeriesCache(slug)
             return updated and updated.books and updated.books[target_index]
@@ -950,7 +1119,7 @@ function SeriesManager:writeDocMetadata(epub_path, series_name, series_index)
     -- Attempt 1: Via DocSettings if available in KOReader runtime
     local ok_ds, DocSettings = pcall(require, "docsettings")
     if ok_ds and DocSettings and DocSettings.open then
-        local ok_save = pcall(function()
+        local ok_save, saved = pcall(function()
             local ds = DocSettings:open(epub_path)
             if ds then
                 local props = ds:readSetting("doc_props") or {}
@@ -967,69 +1136,109 @@ function SeriesManager:writeDocMetadata(epub_path, series_name, series_index)
             end
             return false
         end)
-        if ok_save then return true end
+        if ok_save and saved then return true end
     end
 
-    -- Attempt 2: Fallback direct write into <file>.sdr/metadata.epub.lua
-    local sep = epub_path:find("\\") and "\\" or "/"
-    local sdr_dir = epub_path .. ".sdr"
-    local sidecar_path = sdr_dir .. sep .. "metadata.epub.lua"
+    -- Attempt 2: Direct write into candidate .sdr directories
+    local cand_dirs = self:getCandidateSidecarDirs(epub_path)
+    if #cand_dirs == 0 then
+        table.insert(cand_dirs, epub_path .. ".sdr")
+    end
 
-    local ok_direct = pcall(function()
-        local escaped_dir = sdr_dir:gsub("'", "'\\''")
-        os.execute("mkdir -p '" .. escaped_dir .. "'")
-        local loaded = safeLoadCacheFile(sidecar_path) or {}
-        loaded.doc_props = loaded.doc_props or {}
-        if series_name and series_name ~= "" then
-            loaded.doc_props.series = series_name
-        end
-        if series_index then
-            loaded.doc_props.series_index = series_index
-        end
+    local any_saved = false
+    for _, sdr_dir in ipairs(cand_dirs) do
+        local sidecar_path = sdr_dir .. "/metadata.epub.lua"
+        local ok_direct = pcall(function()
+            local escaped_dir = sdr_dir:gsub("'", "'\\''")
+            os.execute("mkdir -p '" .. escaped_dir .. "'")
+            local loaded = safeLoadCacheFile(sidecar_path) or {}
+            loaded.doc_props = loaded.doc_props or {}
+            if series_name and series_name ~= "" then
+                loaded.doc_props.series = series_name
+            end
+            if series_index then
+                loaded.doc_props.series_index = series_index
+            end
 
-        local f = io.open(sidecar_path, "w")
-        if not f then return false end
-        f:write("-- KOReader Document Metadata Sidecar\nreturn ")
-        self:serializeToFile(f, loaded, "")
-        f:write("\n")
-        f:close()
-        logger.info("SeriesManager: Saved series metadata via direct file write to: " .. tostring(sidecar_path))
-        return true
-    end)
+            local f = io.open(sidecar_path, "w")
+            if not f then return false end
+            f:write("-- KOReader Document Metadata Sidecar\nreturn ")
+            self:serializeToFile(f, loaded, "")
+            f:write("\n")
+            f:close()
+            logger.info("SeriesManager: Saved series metadata via direct file write to: " .. tostring(sidecar_path))
+            return true
+        end)
+        if ok_direct then any_saved = true end
+    end
 
-    return ok_direct
+    return any_saved
 end
 
 -- Read metadata from an ebook sidecar or xray cache
 function SeriesManager:readBookMetadata(book_path)
     if not book_path or book_path == "" then return nil end
-    local sep = book_path:find("\\") and "\\" or "/"
-    local sdr_dir = book_path .. ".sdr"
-    local sidecar_path = sdr_dir .. sep .. "metadata.epub.lua"
-    local xray_cache_path = sdr_dir .. sep .. "xray_cache.lua"
 
     local title, author, series_name, series_index
 
-    local sidecar = safeLoadCacheFile(sidecar_path)
-    if sidecar and sidecar.doc_props then
-        local dp = sidecar.doc_props
-        title = dp.title
-        author = dp.authors or dp.author
-        series_name = dp.series or dp.Series
-        series_index = tonumber(dp.series_index or dp.seriesindex or dp.SeriesIndex)
+    -- Attempt 1: Via DocSettings if available in KOReader runtime
+    local ok_ds, DocSettings = pcall(require, "docsettings")
+    if ok_ds and DocSettings and DocSettings.open then
+        pcall(function()
+            local ds = DocSettings:open(book_path)
+            if ds then
+                local cp = ds:readSetting("custom_props")
+                if cp then
+                    title = title or cp.title
+                    author = author or cp.authors or cp.author
+                    series_name = series_name or cp.series or cp.Series
+                    series_index = series_index or tonumber(cp.series_index or cp.seriesindex or cp.SeriesIndex)
+                end
+                local dp = ds:readSetting("doc_props")
+                if dp then
+                    title = title or dp.title
+                    author = author or dp.authors or dp.author
+                    series_name = series_name or dp.series or dp.Series
+                    series_index = series_index or tonumber(dp.series_index or dp.seriesindex or dp.SeriesIndex)
+                end
+            end
+        end)
     end
 
-    local xray_cache = safeLoadCacheFile(xray_cache_path)
-    if xray_cache then
-        title = title or xray_cache.title or xray_cache.book_title
-        author = author or xray_cache.author or xray_cache.book_author or xray_cache.authors
-        series_name = series_name or xray_cache.series or xray_cache.series_name
-        series_index = series_index or tonumber(xray_cache.series_index)
+    -- Attempt 2: Check candidate sidecar directories for metadata.epub.lua and xray_cache.lua
+    local cand_dirs = self:getCandidateSidecarDirs(book_path)
+    for _, sdr_dir in ipairs(cand_dirs) do
+        local sidecar_path = sdr_dir .. "/metadata.epub.lua"
+        local sidecar = safeLoadCacheFile(sidecar_path)
+        if sidecar then
+            if sidecar.custom_props then
+                local cp = sidecar.custom_props
+                title = title or cp.title
+                author = author or cp.authors or cp.author
+                series_name = series_name or cp.series or cp.Series
+                series_index = series_index or tonumber(cp.series_index or cp.seriesindex or cp.SeriesIndex)
+            end
+            if sidecar.doc_props then
+                local dp = sidecar.doc_props
+                title = title or dp.title
+                author = author or dp.authors or dp.author
+                series_name = series_name or dp.series or dp.Series
+                series_index = series_index or tonumber(dp.series_index or dp.seriesindex or dp.SeriesIndex)
+            end
+        end
+
+        local xray_cache_path = sdr_dir .. "/xray_cache.lua"
+        local xray_cache = safeLoadCacheFile(xray_cache_path)
+        if xray_cache then
+            title = title or xray_cache.title or xray_cache.book_title
+            author = author or xray_cache.author or xray_cache.book_author or xray_cache.authors
+            series_name = series_name or xray_cache.series or xray_cache.series_name
+            series_index = series_index or tonumber(xray_cache.series_index)
+        end
     end
 
-    -- Books never opened in KOReader have no sidecar; fall back to the metadata
-    -- CoverBrowser's BookInfoManager has already extracted from the file.
-    if not series_index then
+    -- Fall back to CoverBrowser's BookInfoManager for any still-missing fields
+    if not series_index or not title or not author then
         local ok_bim, BookInfoManager = pcall(require, "bookinfomanager")
         if ok_bim and BookInfoManager and BookInfoManager.getBookInfo then
             local ok_bi, bi = pcall(BookInfoManager.getBookInfo, BookInfoManager, book_path, false)
@@ -1037,7 +1246,7 @@ function SeriesManager:readBookMetadata(book_path)
                 title = title or bi.title
                 author = author or bi.authors
                 series_name = series_name or bi.series
-                series_index = tonumber(bi.series_index)
+                series_index = series_index or tonumber(bi.series_index)
             end
         end
     end

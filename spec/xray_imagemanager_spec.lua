@@ -97,6 +97,16 @@ describe("xray_imagemanager", function()
             assert.is_true(res[3].is_spoiler)
         end)
 
+        it("clears spoiler flag if spoiler_revealed is true", function()
+            local images_with_revealed = {
+                { id = "img_rev", title = "Spoiler Map", page = 500, spoiler_revealed = true }
+            }
+            local res = img_mgr:getFilteredImages(images_with_revealed, "all", 200, "standard")
+            assert.are.equal(1, #res)
+            assert.is_false(res[1].is_spoiler)
+            assert.is_true(res[1].spoiler_revealed)
+        end)
+
         it("filters only favorites in favorites tab", function()
             local res = img_mgr:getFilteredImages(test_images, "favorites", 200, "standard")
             assert.are.equal(1, #res)

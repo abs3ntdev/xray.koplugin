@@ -11,6 +11,59 @@ if not ok_lfs or type(lfs) ~= "table" then lfs = nil end
 local plugin_path = ((...) or ""):match("(.-)[^%.]+$") or ""
 local utils = require(plugin_path .. "xray_utils")
 
+pcall(require, "ffi/loadlib")
+local ok_archiver, Archiver = pcall(require, "ffi/archiver")
+if not ok_archiver or type(Archiver) ~= "table" then
+    Archiver = nil
+end
+
+-- Fast binary header parser for PNG, JPEG, GIF, and WebP dimensions from in-memory string
+local function parseImageDimensionsFromBytes(data)
+    if not data or #data < 10 then return nil, nil end
+    -- PNG: bytes 17-24 (width, height in big-endian)
+    if data:sub(1, 8) == "\137PNG\r\n\26\n" and #data >= 24 then
+        local w1, w2, w3, w4, h1, h2, h3, h4 = data:byte(17, 24)
+        if w1 and h4 then
+            local w = (w1 * 16777216) + (w2 * 65536) + (w3 * 256) + w4
+            local h = (h1 * 16777216) + (h2 * 65536) + (h3 * 256) + h4
+            return w, h
+        end
+    end
+    -- GIF: bytes 7-10 (width, height in little-endian)
+    if data:sub(1, 3) == "GIF" and #data >= 10 then
+        local w1, w2, h1, h2 = data:byte(7, 10)
+        if w1 and h2 then
+            return w1 + (w2 * 256), h1 + (h2 * 256)
+        end
+    end
+    -- JPEG: scan SOF markers
+    if data:byte(1) == 0xFF and data:byte(2) == 0xD8 then
+        local pos = 3
+        local len_data = #data
+        while pos + 3 <= len_data do
+            local m1, m2 = data:byte(pos, pos + 1)
+            if m1 ~= 0xFF then break end
+            while m2 == 0xFF and pos + 2 <= len_data do
+                pos = pos + 1
+                m2 = data:byte(pos + 1)
+            end
+            local seg_len = data:byte(pos + 2) * 256 + data:byte(pos + 3)
+            if (m2 >= 0xC0 and m2 <= 0xC3) or (m2 >= 0xC5 and m2 <= 0xC7) or (m2 >= 0xC9 and m2 <= 0xCB) or (m2 >= 0xCD and m2 <= 0xCF) then
+                if pos + 8 <= len_data then
+                    local h = data:byte(pos + 5) * 256 + data:byte(pos + 6)
+                    local w = data:byte(pos + 7) * 256 + data:byte(pos + 8)
+                    return w, h
+                end
+                break
+            else
+                if seg_len < 2 then break end
+                pos = pos + 2 + seg_len
+            end
+        end
+    end
+    return nil, nil
+end
+
 local ImageManager = {}
 
 function ImageManager:new(plugin)
@@ -108,6 +161,92 @@ function ImageManager:isOrnamental(image, filter_mode)
     return false
 end
 
+-- Extract archive entry to target file path using Archiver.Reader with unzip fallback
+function ImageManager:extractArchiveEntry(book_path, entry_name, target_path)
+    if not book_path or not entry_name or not target_path then return false end
+
+    -- Strategy 1: In-process libarchive via ffi/archiver (works on WSL, Kindle, Android, Linux)
+    if Archiver and Archiver.Reader then
+        local ok, success = pcall(function()
+            local r = Archiver.Reader:new()
+            if not r:open(book_path) then return false end
+
+            local target_entry = nil
+            local lower_entry = entry_name:lower()
+            local base_entry = (entry_name:match("([^/]+)$") or entry_name):lower()
+
+            for entry in r:iterate() do
+                if entry.mode == "file" then
+                    if entry.path == entry_name then
+                        target_entry = entry
+                        break
+                    elseif entry.path:lower() == lower_entry then
+                        target_entry = entry
+                    elseif not target_entry and (entry.path:match("([^/]+)$") or ""):lower() == base_entry then
+                        target_entry = entry
+                    end
+                end
+            end
+
+            local ok_extract = false
+            if target_entry then
+                ok_extract = r:extractToPath(target_entry.index, target_path)
+            end
+            r:close()
+            return ok_extract
+        end)
+
+        if ok and success then
+            local attr = lfs and lfs.attributes(target_path)
+            if attr and attr.size and attr.size > 0 then
+                return true
+            end
+            local f = io.open(target_path, "rb")
+            if f then
+                local sz = f:seek("end")
+                f:close()
+                if sz and sz > 0 then return true end
+            end
+        end
+    end
+
+    -- Strategy 2: External unzip CLI fallback (for Kindle BusyBox or environments without libarchive)
+    local escaped_book = book_path:gsub("'", "'\\''")
+    local escaped_entry = entry_name:gsub("'", "'\\''")
+    local escaped_target = target_path:gsub("'", "'\\''")
+
+    local cmd = string.format("unzip -p '%s' '%s' > '%s'", escaped_book, escaped_entry, escaped_target)
+    local rc = os.execute(cmd)
+    if rc == 0 or rc == true then
+        local attr = lfs and lfs.attributes(target_path)
+        if attr and attr.size and attr.size > 0 then return true end
+        local f = io.open(target_path, "rb")
+        if f then
+            local sz = f:seek("end")
+            f:close()
+            if sz and sz > 0 then return true end
+        end
+    end
+
+    -- Strategy 3: Unzip wildcard fallback on base filename
+    local base_name = entry_name:match("([^/]+)$") or entry_name
+    local fallback_cmd = string.format("unzip -p '%s' '*%s' > '%s'", escaped_book, base_name:gsub("'", "'\\''"), escaped_target)
+    local rc2 = os.execute(fallback_cmd)
+    if rc2 == 0 or rc2 == true then
+        local attr = lfs and lfs.attributes(target_path)
+        if attr and attr.size and attr.size > 0 then return true end
+        local f = io.open(target_path, "rb")
+        if f then
+            local sz = f:seek("end")
+            f:close()
+            if sz and sz > 0 then return true end
+        end
+    end
+
+    pcall(os.remove, target_path)
+    return false
+end
+
 -- Extract image file from an EPUB / archive to the sidecar images directory
 function ImageManager:extractImageToFile(book_path, image)
     if not image then return nil end
@@ -149,55 +288,11 @@ function ImageManager:extractImageToFile(book_path, image)
         end
     end
     
-    -- Extract using unzip if available on device
-    local escaped_book = book_path:gsub("'", "'\\''")
-    local escaped_href = image.href:gsub("'", "'\\''")
-    local escaped_target = target_path:gsub("'", "'\\''")
-    
-    -- Direct extraction command
-    local cmd = string.format("unzip -p '%s' '%s' > '%s'", escaped_book, escaped_href, escaped_target)
-    local rc = os.execute(cmd)
-    
-    if rc == 0 or rc == true then
-        local attr = lfs and lfs.attributes(target_path)
-        if attr and attr.size and attr.size > 0 then
-            image.cached_file = target_path
-            return target_path
-        end
-        local f = io.open(target_path, "rb")
-        if f then
-            local sz = f:seek("end")
-            f:close()
-            if sz and sz > 0 then
-                image.cached_file = target_path
-                return target_path
-            end
-        end
+    if self:extractArchiveEntry(book_path, image.href, target_path) then
+        image.cached_file = target_path
+        return target_path
     end
-    
-    -- Fallback: try case-insensitive or base filename match in archive
-    local base_name = image.href:match("([^/]+)$") or image.href
-    local fallback_cmd = string.format("unzip -p '%s' '*%s' > '%s'", escaped_book, base_name:gsub("'", "'\\''"), escaped_target)
-    local rc2 = os.execute(fallback_cmd)
-    if rc2 == 0 or rc2 == true then
-        local attr = lfs and lfs.attributes(target_path)
-        if attr and attr.size and attr.size > 0 then
-            image.cached_file = target_path
-            return target_path
-        end
-        local f = io.open(target_path, "rb")
-        if f then
-            local sz = f:seek("end")
-            f:close()
-            if sz and sz > 0 then
-                image.cached_file = target_path
-                return target_path
-            end
-        end
-    end
-    
-    -- Clean up any 0-byte or empty file left behind by shell redirect
-    pcall(os.remove, target_path)
+
     return nil
 end
 
@@ -241,7 +336,10 @@ function ImageManager:getFilteredImages(images, tab, current_page, filter_mode, 
             for k, v in pairs(img) do item[k] = v end
             
             -- Spoiler calculation: if image appears after current_page
-            if current_page and item.page and tonumber(item.page) then
+            if img.spoiler_revealed == true then
+                item.is_spoiler = false
+                item.spoiler_revealed = true
+            elseif current_page and item.page and tonumber(item.page) then
                 item.is_spoiler = tonumber(item.page) > tonumber(current_page)
             else
                 item.is_spoiler = false
@@ -341,19 +439,42 @@ function ImageManager:toggleHideImage(book_data, image_id)
 end
 
 -- Extract sequential TOC order of XHTML files from NCX (EPUB 2) or Nav (EPUB 3)
-function ImageManager:getTocFileMapping(escaped_book, ncx_path, nav_path)
+function ImageManager:getTocFileMapping(book_path, ncx_path, nav_path, preloaded_content)
     local file_to_toc_idx = {}
+    local content = preloaded_content
     local target_path = ncx_path or nav_path
-    if not target_path then return file_to_toc_idx end
+    if not target_path and not content then return file_to_toc_idx end
 
-    local cmd = string.format("unzip -p '%s' '%s'", escaped_book, target_path:gsub("'", "'\\''"))
-    local p = io.popen(cmd)
-    if not p then return file_to_toc_idx end
-    local content = p:read("*a") or ""
-    p:close()
+    if not content and book_path and target_path then
+        local raw_book = book_path:gsub("^'", ""):gsub("'$", ""):gsub("'\\'''", "'")
+        if Archiver and Archiver.Reader then
+            pcall(function()
+                local r = Archiver.Reader:new()
+                if r:open(raw_book) then
+                    for entry in r:iterate() do
+                        if entry.path == target_path or entry.path:lower() == target_path:lower() then
+                            content = r:extractToMemory(entry.index)
+                            break
+                        end
+                    end
+                    r:close()
+                end
+            end)
+        end
+        if not content then
+            local escaped_book = raw_book:gsub("'", "'\\''")
+            local cmd = string.format("unzip -p '%s' '%s'", escaped_book, target_path:gsub("'", "'\\''"))
+            local p = io.popen(cmd)
+            if p then
+                content = p:read("*a") or ""
+                p:close()
+            end
+        end
+    end
 
+    content = content or ""
     local idx = 0
-    if ncx_path then
+    if ncx_path and (content:find("<ncx") or content:find("<navMap")) then
         for src in content:gmatch('<content%s+src=["\']([^"\']+)["\']') do
             idx = idx + 1
             local clean = src:match("([^#]+)") or src
@@ -362,7 +483,7 @@ function ImageManager:getTocFileMapping(escaped_book, ncx_path, nav_path)
                 file_to_toc_idx[base] = idx
             end
         end
-    elseif nav_path then
+    elseif nav_path or content:find("<nav") then
         for href in content:gmatch('<a%s+[^>]*href=["\']([^"\']+)["\']') do
             idx = idx + 1
             local clean = href:match("([^#]+)") or href
@@ -514,24 +635,52 @@ function ImageManager:resolveImagePage(ui, image_entry, force)
 
     if not meta then
         local opf_path, ncx_path, nav_path = nil, nil, nil
-        local list_pipe = io.popen(string.format("unzip -l '%s'", escaped_book))
-        if list_pipe then
-            for line in list_pipe:lines() do
-                local fname = line:match("^%s*%d+%s+[%d%-%s:]+%s+(.+)%s*$")
-                if fname then
-                    local f_lower = fname:lower()
-                    if f_lower:match("%.opf$") then opf_path = fname
-                    elseif f_lower:match("%.ncx$") then ncx_path = fname
-                    elseif f_lower:match("nav%.xhtml$") or f_lower:match("nav%.html$") then nav_path = fname end
+        local opf_content = nil
+        local ncx_content = nil
+        local nav_content = nil
+
+        if Archiver and Archiver.Reader then
+            pcall(function()
+                local r = Archiver.Reader:new()
+                if r:open(book_path) then
+                    for entry in r:iterate() do
+                        if entry.mode == "file" then
+                            local f_lower = entry.path:lower()
+                            if f_lower:match("%.opf$") then opf_path = entry.path
+                            elseif f_lower:match("%.ncx$") then ncx_path = entry.path
+                            elseif f_lower:match("nav%.xhtml$") or f_lower:match("nav%.html$") then nav_path = entry.path end
+                        end
+                    end
+                    if opf_path then opf_content = r:extractToMemory(opf_path) end
+                    if ncx_path then ncx_content = r:extractToMemory(ncx_path) end
+                    if nav_path then nav_content = r:extractToMemory(nav_path) end
+                    r:close()
                 end
+            end)
+        end
+
+        if not opf_path then
+            local list_pipe = io.popen(string.format("unzip -l '%s'", escaped_book))
+            if list_pipe then
+                for line in list_pipe:lines() do
+                    local fname = line:match("^%s*%d+%s+[%d%-%s:]+%s+(.+)%s*$")
+                    if fname then
+                        local f_lower = fname:lower()
+                        if f_lower:match("%.opf$") then opf_path = fname
+                        elseif f_lower:match("%.ncx$") then ncx_path = fname
+                        elseif f_lower:match("nav%.xhtml$") or f_lower:match("nav%.html$") then nav_path = fname end
+                    end
+                end
+                list_pipe:close()
             end
-            list_pipe:close()
         end
         if not opf_path then return existing or 1 end
 
-        local opf_content = ""
-        local opf_pipe = io.popen(string.format("unzip -p '%s' '%s'", escaped_book, opf_path:gsub("'", "'\\''")))
-        if opf_pipe then opf_content = opf_pipe:read("*a") or ""; opf_pipe:close() end
+        if not opf_content then
+            local opf_pipe = io.popen(string.format("unzip -p '%s' '%s'", escaped_book, opf_path:gsub("'", "'\\''")))
+            if opf_pipe then opf_content = opf_pipe:read("*a") or ""; opf_pipe:close() end
+        end
+        if not opf_content or opf_content == "" then return existing or 1 end
 
         local opf_dir = opf_path:match("^(.*/)") or ""
         local manifest = {}
@@ -554,7 +703,7 @@ function ImageManager:resolveImagePage(ui, image_entry, force)
             end
         end
 
-        local file_to_toc_idx = self:getTocFileMapping(escaped_book, ncx_path, nav_path)
+        local file_to_toc_idx = self:getTocFileMapping(book_path, ncx_path, nav_path, ncx_content or nav_content)
 
         local flat_toc = {}
         if ui.document.getToc then
@@ -594,11 +743,24 @@ function ImageManager:resolveImagePage(ui, image_entry, force)
             if s_lower:match("%.xhtml$") or s_lower:match("%.html$") or s_lower:match("%.htm$") then
                 local content = meta.spine_contents[s_href]
                 if not content then
-                    local cmd = string.format("unzip -p '%s' '%s'", escaped_book, s_href:gsub("'", "'\\''"))
-                    local sp = io.popen(cmd)
-                    if sp then
-                        content = sp:read("*a") or ""
-                        sp:close()
+                    if Archiver and Archiver.Reader then
+                        pcall(function()
+                            local r = Archiver.Reader:new()
+                            if r:open(book_path) then
+                                content = r:extractToMemory(s_href)
+                                r:close()
+                            end
+                        end)
+                    end
+                    if not content then
+                        local cmd = string.format("unzip -p '%s' '%s'", escaped_book, s_href:gsub("'", "'\\''"))
+                        local sp = io.popen(cmd)
+                        if sp then
+                            content = sp:read("*a") or ""
+                            sp:close()
+                        end
+                    end
+                    if content and #content > 0 then
                         -- FIFO eviction: keep at most 20 spine files in RAM
                         meta._spine_keys = meta._spine_keys or {}
                         if #meta._spine_keys >= 20 then
@@ -714,33 +876,105 @@ end
 -- Scan images in an EPUB file by reading OPF manifest, spine, and document TOC
 function ImageManager:scanEpubImages(book_path, total_pages, ui)
     local images = {}
-    local escaped_book = book_path:gsub("'", "'\\''")
     total_pages = total_pages or 1
-    
-    -- 1. List files inside EPUB using unzip -l
-    local list_cmd = string.format("unzip -l '%s'", escaped_book)
-    local p = io.popen(list_cmd)
-    if not p then return images end
     
     local all_files = {}
     local opf_path = nil
     local ncx_path = nil
     local nav_path = nil
-    for line in p:lines() do
-        local size_str, fname = line:match("^%s*(%d+)%s+[%d%-%s:]+%s+(.+)%s*$")
-        if size_str and fname then
-            table.insert(all_files, { size = tonumber(size_str) or 0, name = fname })
-            local f_lower = fname:lower()
-            if f_lower:match("%.opf$") then
-                opf_path = fname
-            elseif f_lower:match("%.ncx$") then
-                ncx_path = fname
-            elseif f_lower:match("nav%.xhtml$") or f_lower:match("nav%.html$") then
-                nav_path = fname
+    local opf_content = nil
+    local toc_content = nil
+    local image_dimensions = {}
+
+    -- 1. In-process streaming reader via libarchive (zero process forks, ~170ms)
+    if Archiver and Archiver.Reader then
+        pcall(function()
+            local r = Archiver.Reader:new()
+            if not r:open(book_path) then return end
+
+            local image_entries_to_probe = {}
+
+            -- Pass 1: Stream through archive in a single forward pass
+            for entry in r:iterate() do
+                if entry.mode == "file" then
+                    local f_name = entry.path
+                    local f_lower = f_name:lower()
+                    table.insert(all_files, { size = entry.size or 0, name = f_name, arc_idx = entry.index })
+
+                    if f_lower:match("%.opf$") then
+                        opf_path = f_name
+                    elseif f_lower:match("%.ncx$") then
+                        ncx_path = f_name
+                    elseif f_lower:match("nav%.xhtml$") or f_lower:match("nav%.html$") then
+                        nav_path = f_name
+                    elseif f_lower:match("%.jpe?g$") or f_lower:match("%.png$") or f_lower:match("%.webp$") or f_lower:match("%.gif$") then
+                        table.insert(image_entries_to_probe, { path = f_name, size = entry.size or 0, index = entry.index })
+                    end
+                end
+            end
+
+            -- Extract OPF and TOC in-memory
+            if opf_path then
+                opf_content = r:extractToMemory(opf_path)
+            end
+            if ncx_path then
+                toc_content = r:extractToMemory(ncx_path)
+            elseif nav_path then
+                toc_content = r:extractToMemory(nav_path)
+            end
+
+            -- Extract image dimensions from binary headers
+            table.sort(image_entries_to_probe, function(a, b) return a.index < b.index end)
+            for _, img_probe in ipairs(image_entries_to_probe) do
+                if img_probe.size and img_probe.size > 0 and img_probe.size <= 4194304 then
+                    local data = r:extractToMemory(img_probe.index)
+                    if data then
+                        local w, h = parseImageDimensionsFromBytes(data)
+                        if w and h then
+                            image_dimensions[img_probe.path] = { w = w, h = h }
+                        end
+                    end
+                end
+            end
+
+            r:close()
+        end)
+    end
+
+    -- Fallback to unzip -l / unzip -p if Archiver was unavailable or found no files
+    if not opf_path and not all_files[1] then
+        local escaped_book = book_path:gsub("'", "'\\''")
+        local list_cmd = string.format("unzip -l '%s'", escaped_book)
+        local p = io.popen(list_cmd)
+        if p then
+            for line in p:lines() do
+                local size_str, fname = line:match("^%s*(%d+)%s+[%d%-%s:]+%s+(.+)%s*$")
+                if size_str and fname then
+                    table.insert(all_files, { size = tonumber(size_str) or 0, name = fname })
+                    local f_lower = fname:lower()
+                    if f_lower:match("%.opf$") then
+                        opf_path = fname
+                    elseif f_lower:match("%.ncx$") then
+                        ncx_path = fname
+                    elseif f_lower:match("nav%.xhtml$") or f_lower:match("nav%.html$") then
+                        nav_path = fname
+                    end
+                end
+            end
+            p:close()
+        end
+
+        if opf_path and not opf_content then
+            local opf_cmd = string.format("unzip -p '%s' '%s'", escaped_book, opf_path:gsub("'", "'\\''"))
+            local opf_p = io.popen(opf_cmd)
+            if opf_p then
+                opf_content = opf_p:read("*a") or ""
+                opf_p:close()
             end
         end
     end
-    p:close()
+
+    if not opf_content then return images end
 
     -- 2. Read and parse OPF manifest, spine, and cover metadata
     local manifest = {} -- id -> full_href
@@ -749,59 +983,50 @@ function ImageManager:scanEpubImages(book_path, total_pages, ui)
     local spine_items = {} -- list of spine file full_hrefs in reading order
     local cover_img_href = nil
 
-    if opf_path then
-        local opf_cmd = string.format("unzip -p '%s' '%s'", escaped_book, opf_path:gsub("'", "'\\''"))
-        local opf_p = io.popen(opf_cmd)
-        if opf_p then
-            local opf_content = opf_p:read("*a") or ""
-            opf_p:close()
+    local opf_dir = (opf_path and opf_path:match("^(.*/)")) or ""
 
-            local opf_dir = opf_path:match("^(.*/)") or ""
+    -- Extract cover image ID from meta name="cover"
+    local cover_id = opf_content:match('<meta[^>]+name=["\']cover["\'][^>]+content=["\']([^"\']+)["\']')
+        or opf_content:match('<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']cover["\']')
 
-            -- Extract cover image ID from meta name="cover"
-            local cover_id = opf_content:match('<meta[^>]+name=["\']cover["\'][^>]+content=["\']([^"\']+)["\']')
-                or opf_content:match('<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']cover["\']')
+    -- Parse <item id="..." href="..." media-type="..."/>
+    for item_tag in opf_content:gmatch("<item%s+[^>]+>") do
+        local id = item_tag:match('id=["\']([^"\']+)["\']')
+        local href = item_tag:match('href=["\']([^"\']+)["\']')
+        local media_type = item_tag:match('media%-type=["\']([^"\']+)["\']') or ""
+        local properties = item_tag:match('properties=["\']([^"\']+)["\']') or ""
 
-            -- Parse <item id="..." href="..." media-type="..."/>
-            for item_tag in opf_content:gmatch("<item%s+[^>]+>") do
-                local id = item_tag:match('id=["\']([^"\']+)["\']')
-                local href = item_tag:match('href=["\']([^"\']+)["\']')
-                local media_type = item_tag:match('media%-type=["\']([^"\']+)["\']') or ""
-                local properties = item_tag:match('properties=["\']([^"\']+)["\']') or ""
+        if id and href then
+            local full_href = opf_dir .. href
+            full_href = full_href:gsub("[^/]+/%.%./", ""):gsub("%./", "")
+            manifest[id] = full_href
+            manifest_by_href[full_href] = { id = id, href = full_href, media_type = media_type, properties = properties }
+            manifest_by_href[href] = manifest_by_href[full_href]
 
-                if id and href then
-                    local full_href = opf_dir .. href
-                    full_href = full_href:gsub("[^/]+/%.%./", ""):gsub("%./", "")
-                    manifest[id] = full_href
-                    manifest_by_href[full_href] = { id = id, href = full_href, media_type = media_type, properties = properties }
-                    manifest_by_href[href] = manifest_by_href[full_href]
-
-                    if properties:find("cover-image") or id == cover_id or id:lower() == "cover-image" or id:lower() == "cover_img" then
-                        cover_img_href = full_href
-                    end
-                end
-            end
-
-            -- Parse <spine> <itemref idref="..."/> in order
-            for itemref in opf_content:gmatch("<itemref%s+[^>]+>") do
-                local idref = itemref:match('idref=["\']([^"\']+)["\']')
-                if idref and manifest[idref] then
-                    table.insert(spine_items, manifest[idref])
-                    manifest_id_to_spine[idref] = #spine_items
-                end
+            if properties:find("cover-image") or id == cover_id or id:lower() == "cover-image" or id:lower() == "cover_img" then
+                cover_img_href = full_href
             end
         end
     end
 
+    -- Parse <spine> <itemref idref="..."/> in order
+    for itemref in opf_content:gmatch("<itemref%s+[^>]+>") do
+        local idref = itemref:match('idref=["\']([^"\']+)["\']')
+        if idref and manifest[idref] then
+            table.insert(spine_items, manifest[idref])
+            manifest_id_to_spine[idref] = #spine_items
+        end
+    end
+
     -- 3. Extract TOC mapping from NCX / Nav and build verified spine page map
-    local file_to_toc_idx = self:getTocFileMapping(escaped_book, ncx_path, nav_path)
+    local file_to_toc_idx = self:getTocFileMapping(book_path, ncx_path, nav_path, toc_content)
     local spine_page_map, toc_entries = self:buildSpinePageMap(ui, spine_items, manifest_id_to_spine, total_pages, file_to_toc_idx)
 
     -- 4. Collect all image files
     local image_files = {}
     for _, f in ipairs(all_files) do
         local lower_f = f.name:lower()
-        if lower_f:match("%.jpe?g$") or lower_f:match("%.png$") or lower_f:match("%.webp$") or lower_f:match("%.svg$") then
+        if lower_f:match("%.jpe?g$") or lower_f:match("%.png$") or lower_f:match("%.webp$") or lower_f:match("%.svg$") or lower_f:match("%.gif$") then
             table.insert(image_files, f)
         end
     end
@@ -812,15 +1037,55 @@ function ImageManager:scanEpubImages(book_path, total_pages, ui)
     local remaining_unmatched = #image_files
 
     if remaining_unmatched > 0 then
+        local spine_contents = {}
+        if Archiver and Archiver.Reader then
+            pcall(function()
+                local r = Archiver.Reader:new()
+                if r:open(book_path) then
+                    local spine_entry_map = {}
+                    for entry in r:iterate() do
+                        if entry.mode == "file" then
+                            spine_entry_map[entry.path] = entry.index
+                            spine_entry_map[entry.path:lower()] = entry.index
+                        end
+                    end
+                    local spine_to_read = {}
+                    for s_idx, s_href in ipairs(spine_items) do
+                        local arc_idx = spine_entry_map[s_href] or spine_entry_map[s_href:lower()]
+                        if arc_idx then
+                            table.insert(spine_to_read, { s_idx = s_idx, s_href = s_href, arc_idx = arc_idx })
+                        end
+                    end
+                    table.sort(spine_to_read, function(a, b) return a.arc_idx < b.arc_idx end)
+                    for _, s_item in ipairs(spine_to_read) do
+                        local s_lower = s_item.s_href:lower()
+                        if s_lower:match("%.xhtml$") or s_lower:match("%.html$") or s_lower:match("%.htm$") or s_lower:match("%.xml$") then
+                            local content = r:extractToMemory(s_item.arc_idx)
+                            if content then
+                                spine_contents[s_item.s_idx] = content
+                            end
+                        end
+                    end
+                    r:close()
+                end
+            end)
+        end
+
         for s_idx, s_href in ipairs(spine_items) do
             if remaining_unmatched <= 0 then break end
             local s_lower = s_href:lower()
             if s_lower:match("%.xhtml$") or s_lower:match("%.html$") or s_lower:match("%.htm$") or s_lower:match("%.xml$") then
-                local cmd = string.format("unzip -p '%s' '%s'", escaped_book, s_href:gsub("'", "'\\''"))
-                local sp_pipe = io.popen(cmd)
-                if sp_pipe then
-                    local content = sp_pipe:read("*a") or ""
-                    sp_pipe:close()
+                local content = spine_contents[s_idx]
+                if not content then
+                    local escaped_book = book_path:gsub("'", "'\\''")
+                    local cmd = string.format("unzip -p '%s' '%s'", escaped_book, s_href:gsub("'", "'\\''"))
+                    local sp_pipe = io.popen(cmd)
+                    if sp_pipe then
+                        content = sp_pipe:read("*a") or ""
+                        sp_pipe:close()
+                    end
+                end
+                if content and #content > 0 then
                     for _, img_f in ipairs(image_files) do
                         local base_img = img_f.name:match("([^/]+)$") or img_f.name
                         if not image_to_spine_idx[img_f.name] then
@@ -892,6 +1157,12 @@ function ImageManager:scanEpubImages(book_path, total_pages, ui)
             is_resolved = false
         end
 
+        local dims = image_dimensions[fname]
+        local aspect_ratio = nil
+        if dims and dims.w and dims.h and dims.w > 0 then
+            aspect_ratio = dims.h / dims.w
+        end
+
         table.insert(images, {
             id = self:generateImageId(fname, i),
             href = fname,
@@ -900,6 +1171,9 @@ function ImageManager:scanEpubImages(book_path, total_pages, ui)
             category = cat,
             page = page_num,
             page_resolved = is_resolved,
+            width = dims and dims.w or nil,
+            height = dims and dims.h or nil,
+            aspect_ratio = aspect_ratio,
         })
     end
 
@@ -909,12 +1183,40 @@ end
 -- Scan comic CBZ archive images
 function ImageManager:scanCbzImages(book_path, total_pages)
     local images = {}
+    local page_idx = 1
+
+    if Archiver and Archiver.Reader then
+        local ok = pcall(function()
+            local r = Archiver.Reader:new()
+            if not r:open(book_path) then return end
+            for entry in r:iterate() do
+                if entry.mode == "file" then
+                    local lower_f = entry.path:lower()
+                    if lower_f:match("%.jpe?g$") or lower_f:match("%.png$") or lower_f:match("%.webp$") then
+                        local title = string.format("Page %d", page_idx)
+                        table.insert(images, {
+                            id = "cbz_" .. tostring(page_idx),
+                            href = entry.path,
+                            file_size = entry.size or 0,
+                            title = title,
+                            category = (page_idx == 1 and "illustration" or "general"),
+                            page = page_idx,
+                        })
+                        page_idx = page_idx + 1
+                    end
+                end
+            end
+            r:close()
+        end)
+        if ok and #images > 0 then return images end
+    end
+
     local escaped_book = book_path:gsub("'", "'\\''")
     local list_cmd = string.format("unzip -l '%s'", escaped_book)
     local p = io.popen(list_cmd)
     if not p then return images end
     
-    local page_idx = 1
+    page_idx = 1
     for line in p:lines() do
         local size_str, fname = line:match("^%s*(%d+)%s+[%d%-%s:]+%s+(.+)%s*$")
         if size_str and fname then

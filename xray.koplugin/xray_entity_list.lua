@@ -117,7 +117,7 @@ end
 
 local function createIconButton(opts)
     opts = opts or {}
-    local icon_size = opts.size or sc(24)
+    local icon_size = opts.size or sc(30)
     local btn_w = opts.width or sc(48)
     local btn_h = opts.height or sc(48)
     local is_focused = opts.is_focused == true
@@ -154,7 +154,7 @@ local EntityListOverlay = InputContainer:extend{
     sh = nil,
     plugin = nil,
     entity = nil,
-    mode = "characters", -- "characters", "terms", "locations", "historical_figures", "timeline", "mentions", "linked_entries"
+    mode = "characters", -- "characters", "terms", "locations", "historical_figures", "timeline", "mentions", "linked_entries", "evolution", "evolution_detail"
     raw_items = nil,
     items = nil,
     current_page = 1,
@@ -167,9 +167,16 @@ local EntityListOverlay = InputContainer:extend{
     footer_focus_idx = 1,
     is_touch_device = true,
     prior_collapsed = true,
+    filter_key_only = true,
+    reveal_future = false,
+    detail_idx = 1,
 }
 
 function EntityListOverlay:init()
+    if self.opts then
+        if self.opts.show_all ~= nil then self.reveal_future = (self.opts.show_all == true) end
+        if self.opts.filter_key_only ~= nil then self.filter_key_only = (self.opts.filter_key_only == true) end
+    end
     self.modal = true
     self.covers_fullscreen = true
     self.sw = Screen:getWidth()
@@ -248,49 +255,282 @@ function EntityListOverlay:init()
     self:buildUI()
 end
 
-local function getFirstAppearancePage(entity)
-    if not entity then return 999999 end
-    if tonumber(entity.first_page) and tonumber(entity.first_page) > 0 then
-        return tonumber(entity.first_page)
+function EntityListOverlay:getBookFontSize()
+    local p = self.plugin
+    local size
+    if p and p.ui and p.ui.font and p.ui.font.configurable then
+        size = p.ui.font.configurable.font_size
+    elseif G_reader_settings then
+        size = G_reader_settings:readSetting("cre_font_size")
+              or G_reader_settings:readSetting("kopt_font_size")
     end
-    if tonumber(entity.page) and tonumber(entity.page) > 0 then
-        return tonumber(entity.page)
+    if not size and p and p.getPopupFontSize then
+        size = p:getPopupFontSize()
     end
-    local min_p = 999999
-    if entity.mentions and type(entity.mentions) == "table" and #entity.mentions > 0 then
-        for _, m in ipairs(entity.mentions) do
-            local p = tonumber(m.page)
-            if p and p > 0 and p < min_p then
-                min_p = p
-            end
+    size = tonumber(size) or 22
+
+    local font_setting = p and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.popup_font_size
+    local font_offset = 0
+    if font_setting == "small" then
+        font_offset = -2
+    elseif font_setting == "large" then
+        font_offset = 3
+    elseif font_setting == "xlarge" then
+        font_offset = 6
+    end
+    return math.max(16, size + font_offset)
+end
+
+local function getRoleScore(role)
+    if not role or type(role) ~= "string" then return 0 end
+    local r = role:lower()
+
+    if r:find("protagonist") or r:find("main character") or r:find("lead character") or r:find("hero") then
+        return 100
+    end
+    if r:find("private investigator") or r:find("lead investigator") or r:find("chief investigator") then
+        return 100
+    end
+    if r:find("deuteragonist") or r:find("co%-lead") or r:find("second lead") then
+        return 95
+    end
+    if r:find("detective") then
+        return 90
+    end
+    if r:find("investigat") then
+        if r:find("military") or r:find("insurance") or r:find("forensic") then
+            return 45
+        end
+        return 90
+    end
+
+    if r:find("partner") then
+        local is_personal = r:find("romantic") or r:find("ex%-") or r:find("ex ") or r:find("domestic")
+            or r:find("life") or r:find("dating") or r:find("spouse") or r:find("husband")
+            or r:find("wife") or r:find("girlfriend") or r:find("boyfriend") or r:find("'s partner")
+        if is_personal then
+            return 25
+        else
+            return 85
         end
     end
-    if min_p < 999999 then return min_p end
-    if entity.history and type(entity.history) == "table" and #entity.history > 0 then
+
+    if r:find("primary antagonist") or r:find("main antagonist") or r:find("arch%-villain") then
+        return 80
+    end
+    if r:find("antagonist") or r:find("villain") or r:find("killer") or r:find("murderer") or r:find("culprit") then
+        return 70
+    end
+    if r:find("victim") or r:find("client") then
+        return 40
+    end
+    if r:find("suspect") or r:find("person of interest") then
+        return 35
+    end
+    if r:find("secondary") or r:find("supporting") or r:find("informant") or r:find("fiance") or r:find("friend") or r:find("mother") or r:find("father") or r:find("brother") or r:find("sister") then
+        return 30
+    end
+    if r:find("minor") or r:find("background") or r:find("incidental") or r:find("extra") then
+        return 5
+    end
+
+    return 20
+end
+
+local function getEntityRole(entity)
+    if not entity then return nil end
+    if entity.role and entity.role ~= "" then return entity.role end
+    if entity.states and #entity.states > 0 then
+        for i = #entity.states, 1, -1 do
+            local s = entity.states[i]
+            if s and s.role and s.role ~= "" then return s.role end
+        end
+    end
+    return entity.category or entity.occupation
+end
+
+local function getChapterCount(entity)
+    if not entity then return 0 end
+    local chapters = {}
+    if entity.states and type(entity.states) == "table" then
+        for _, s in ipairs(entity.states) do
+            local ch = s.chapter_index or s.chapter_title or s.page_hint
+            if ch then chapters[ch] = true end
+        end
+    end
+    if entity.history and type(entity.history) == "table" then
         for _, h in ipairs(entity.history) do
-            local p = tonumber(h.page)
-            if p and p > 0 and p < min_p then
-                min_p = p
-            end
+            local ch = h.chapter_index or h.chapter or h.page
+            if ch then chapters[ch] = true end
         end
     end
-    return min_p
+    local count = 0
+    for _ in pairs(chapters) do count = count + 1 end
+    return count
+end
+
+local function calculateImportanceScore(entity)
+    local r_score = getRoleScore(getEntityRole(entity))
+    local ch_count = getChapterCount(entity)
+    local m_count = (entity.mentions and #entity.mentions) or 0
+    if m_count > 0 then
+        return m_count * 100 + r_score * 10 + ch_count * 20
+    else
+        return r_score * 10 + ch_count * 20
+    end
+end
+
+local function getAppearanceOrder(entity, plugin)
+    if not entity then return 9999, 999999 end
+    local min_chap = nil
+    local min_page = nil
+
+    local function consider(chap, page)
+        local c = tonumber(chap)
+        local p = tonumber(page)
+        if p and p > 0 then
+            if not min_page or p < min_page then min_page = p end
+        end
+        if c and c > 0 then
+            if not min_chap or c < min_chap then min_chap = c end
+        end
+    end
+
+    if entity.visible_from then
+        consider(entity.visible_from.chapter_index, entity.visible_from.page_hint)
+    end
+    if entity.states and type(entity.states) == "table" then
+        for _, s in ipairs(entity.states) do
+            consider(s.chapter_index, s.page_hint)
+        end
+    end
+    consider(nil, entity.first_page)
+    consider(nil, entity.page)
+    if entity.history and type(entity.history) == "table" then
+        for _, h in ipairs(entity.history) do
+            local h_chap = h.chapter_index
+            if not h_chap and h.chapter and type(h.chapter) == "string" then
+                h_chap = h.chapter:match("[Cc]hapter%s+(%d+)")
+            end
+            consider(h_chap, h.page)
+        end
+    end
+    if entity.mentions and type(entity.mentions) == "table" then
+        for _, m in ipairs(entity.mentions) do
+            consider(m.chapter_index, m.page)
+        end
+    end
+
+    -- If we have page but no chapter, try to resolve chapter from plugin
+    if min_page and not min_chap and plugin and plugin.getCurrentChapterIndex then
+        pcall(function()
+            min_chap = plugin:getCurrentChapterIndex(min_page)
+        end)
+    end
+
+    -- If we have chapter but no page, try to resolve page from toc
+    if min_chap and not min_page and plugin and plugin.toc and plugin.toc[min_chap] then
+        local tp = tonumber(plugin.toc[min_chap].page)
+        if tp and tp > 0 then min_page = tp end
+    end
+
+    return min_chap or 9999, min_page or 999999
 end
 
 function EntityListOverlay:prepareItems()
+    local p = self.plugin
+    local cur_page = p and p.getCurrentDocPage and p:getCurrentDocPage()
+    local cur_chap = p and p.getCurrentChapterIndex and p:getCurrentChapterIndex(cur_page)
+    local is_spoiler_free = (p and p.ai_helper and p.ai_helper.settings and p.ai_helper.settings.spoiler_setting or "spoiler_free") == "spoiler_free"
+
+    if self.mode == "evolution" or self.mode == "evolution_detail" then
+        local ok, Evolution = pcall(require, plugin_path .. "xray_evolution")
+        if ok and Evolution and Evolution.build then
+            local resolveChapter = function(page, title, index)
+                local idx = index
+                local t = title
+                if not idx and page and p and p.getCurrentChapterIndex then
+                    local looked_up = p:getCurrentChapterIndex(page)
+                    if looked_up and looked_up > 0 then idx = looked_up end
+                end
+                if not idx and t and p and p.toc then
+                    for i, ch in ipairs(p.toc) do
+                        if ch.title and ch.title:lower() == t:lower() then
+                            idx = i
+                            break
+                        end
+                    end
+                end
+                if idx and not t and p and p.toc and p.toc[idx] then
+                    t = p.toc[idx].title
+                end
+                return idx, t
+            end
+            local ctx = {
+                cur_chap = cur_chap,
+                cur_page = cur_page,
+                is_full_book = not is_spoiler_free,
+                show_all = (self.reveal_future == true) or (not is_spoiler_free),
+                resolveChapter = resolveChapter,
+            }
+            local all_milestones = Evolution.build(self.entity, ctx)
+            self.all_milestones = all_milestones
+            if self.filter_key_only ~= false then
+                self.items = Evolution.filterKey(all_milestones)
+            else
+                self.items = all_milestones
+            end
+            self.unfiltered_visible_count = #(self.items or {})
+            return
+        else
+            self.items = {}
+            self.unfiltered_visible_count = 0
+            return
+        end
+    end
+
     local raw = self.raw_items or {}
     local entries = {}
 
     -- Apply search query if present
     local q = (self.search_query and self.search_query ~= "") and self.search_query:lower() or nil
+    local unfiltered_visible_count = 0
     for idx, it in ipairs(raw) do
         local entity = (self.mode == "linked_entries" and it.item) or it
-        local name = (entity.name or entity.chapter or ""):lower()
-        local desc = (entity.description or entity.definition or entity.biography or entity.event or entity.snippet or ""):lower()
-        if not q or (name:find(q, 1, true) or desc:find(q, 1, true)) then
-            table.insert(entries, { item = it, _orig_idx = idx })
+        local visible = true
+        if self.mode == "mentions" then
+            if is_spoiler_free and cur_page then
+                local pg = tonumber(it.page)
+                if pg and pg > cur_page then
+                    visible = false
+                end
+            end
+        elseif self.mode == "timeline" then
+            if is_spoiler_free then
+                if it.chapter_index and cur_chap and it.chapter_index > cur_chap then
+                    visible = false
+                elseif it.page and cur_page and tonumber(it.page) and tonumber(it.page) > cur_page then
+                    if not (it.chapter_index and cur_chap and it.chapter_index < cur_chap) then
+                        visible = false
+                    end
+                end
+            end
+        else
+            if is_spoiler_free and p and p.isEntityVisibleAtCurrentPosition then
+                visible = p:isEntityVisibleAtCurrentPosition(entity, cur_chap, cur_page)
+            end
+        end
+
+        if visible then
+            unfiltered_visible_count = unfiltered_visible_count + 1
+            local name = (entity.name or entity.chapter or ""):lower()
+            local desc = (entity.description or entity.definition or entity.biography or entity.event or entity.snippet or ""):lower()
+            if not q or (name:find(q, 1, true) or desc:find(q, 1, true)) then
+                table.insert(entries, { item = it, _orig_idx = idx })
+            end
         end
     end
+    self.unfiltered_visible_count = unfiltered_visible_count
 
     -- Sorting (timeline and mentions have their own sequence, others use sort modes)
     if self.mode == "mentions" then
@@ -314,56 +554,79 @@ function EntityListOverlay:prepareItems()
             table.sort(entries, function(a, b)
                 local ea = (self.mode == "linked_entries" and a.item.item) or a.item
                 local eb = (self.mode == "linked_entries" and b.item.item) or b.item
-                local pa = getFirstAppearancePage(ea)
-                local pb = getFirstAppearancePage(eb)
+
+                -- Prior-only characters (not in current book) sort after current book characters
+                local prior_a = (ea.source == "series_prior" and (not ea.states or #ea.states == 0) and not ea.visible_from)
+                local prior_b = (eb.source == "series_prior" and (not eb.states or #eb.states == 0) and not eb.visible_from)
+                if prior_a ~= prior_b then
+                    return not prior_a
+                end
+
+                local ca, pa = getAppearanceOrder(ea, self.plugin)
+                local cb, pb = getAppearanceOrder(eb, self.plugin)
+                if ca ~= cb then
+                    return ca < cb
+                end
                 if pa ~= pb then
                     return pa < pb
                 end
-                local oa = tonumber(ea.sort_order)
-                local ob = tonumber(eb.sort_order)
-                if oa and ob and oa ~= ob then
-                    return oa < ob
-                elseif oa and not ob then
-                    return true
-                elseif ob and not oa then
-                    return false
+
+                -- Tie breaker for characters introduced in the same chapter: importance score
+                local sa = calculateImportanceScore(ea)
+                local sb = calculateImportanceScore(eb)
+                if sa ~= sb then
+                    return sa > sb
                 end
+
                 return a._orig_idx < b._orig_idx
             end)
         else
-            -- Default: Frequency of mentions
+            -- Default: Frequency of mentions / Importance
             table.sort(entries, function(a, b)
                 local ea = (self.mode == "linked_entries" and a.item.item) or a.item
                 local eb = (self.mode == "linked_entries" and b.item.item) or b.item
 
-                -- 1. Real mention count if mentions have been scanned
+                -- 1. Prior-only characters (not in current book) sort after current book characters
+                local prior_a = (ea.source == "series_prior" and (not ea.states or #ea.states == 0) and not ea.visible_from)
+                local prior_b = (eb.source == "series_prior" and (not eb.states or #eb.states == 0) and not eb.visible_from)
+                if prior_a ~= prior_b then
+                    return not prior_a
+                end
+
+                -- 2. Real mention count if mentions have been scanned
                 local ma = (ea.mentions and #ea.mentions) or 0
                 local mb = (eb.mentions and #eb.mentions) or 0
                 if ma ~= mb then
                     return ma > mb
                 end
 
-                -- 2. sort_order stamped during AI frequency analysis / cache load (1, 2, 3...)
+                -- 3. Composite importance score (Role weight + Chapter presence)
+                local sa = calculateImportanceScore(ea)
+                local sb = calculateImportanceScore(eb)
+                if sa ~= sb then
+                    return sa > sb
+                end
+
+                -- 4. sort_order if both have valid numeric sort_order (1, 2, 3...)
                 local oa = tonumber(ea.sort_order)
                 local ob = tonumber(eb.sort_order)
-                if oa and ob and oa ~= ob then
+                local valid_oa = oa and oa > 0 and oa < 10000
+                local valid_ob = ob and ob > 0 and ob < 10000
+                if valid_oa and valid_ob and oa ~= ob then
                     return oa < ob
-                elseif oa and not ob then
-                    return true
-                elseif ob and not oa then
-                    return false
                 end
 
-                -- 3. _sort_score if calculated and positive
-                local sa = tonumber(ea._sort_score) or 0
-                local sb = tonumber(eb._sort_score) or 0
-                if sa > 0 or sb > 0 then
-                    if sa ~= sb then
-                        return sa > sb
-                    end
+                -- 5. Earlier appearance order
+                local ca, pa = getAppearanceOrder(ea, self.plugin)
+                local cb, pb = getAppearanceOrder(eb, self.plugin)
+                if ca ~= cb then
+                    return ca < cb
+                end
+                if pa ~= pb then
+                    return pa < pb
                 end
 
-                -- 4. Guaranteed stable fallback to natural list order in raw_items
+                -- 6. Guaranteed stable fallback to natural list order in raw_items
                 return a._orig_idx < b._orig_idx
             end)
         end
@@ -673,6 +936,12 @@ function EntityListOverlay:handleEvent(ev)
         elseif ENTER_KEYS[key] then
             return self:onOpenFocused()
         elseif CLOSE_KEYS[key] then
+            if self.mode == "evolution_detail" then
+                self.mode = "evolution"
+                self:buildUI()
+                UIManager:setDirty(self, "ui")
+                return true
+            end
             return self:close()
         elseif PAGE_PREV[key] then
             return self:onPrevPage()
@@ -682,10 +951,12 @@ function EntityListOverlay:handleEvent(ev)
             return self:onFirstPage()
         elseif key == "End" then
             return self:onLastPage()
-        elseif key == "s" or key == "S" then
+        elseif (key == "s" or key == "S") and self.mode ~= "timeline" and self.mode ~= "evolution" and self.mode ~= "evolution_detail" then
             return self:showSortDialog()
-        elseif key == "f" or key == "F" or key == "/" then
+        elseif (key == "f" or key == "F" or key == "/") and self.mode ~= "evolution" and self.mode ~= "evolution_detail" then
             return self:showSearchDialog()
+        elseif (key == "t" or key == "T") and self.mode == "evolution" then
+            return self:showEvolutionFilterDialog()
         elseif (key == "m" or key == "M") and (self.mode == "characters" or self.mode == "locations") then
             return self:showMergeDialog()
         elseif (key == "+" or key == "=" or key == "a" or key == "A") and (self.mode == "characters" or self.mode == "terms") then
@@ -731,6 +1002,7 @@ function EntityListOverlay:close()
             end
             self.plugin.mentions_menu = nil
         elseif self.mode == "linked_entries" then self.plugin.active_related_menu = nil
+        elseif self.mode == "evolution" or self.mode == "evolution_detail" then self.plugin.active_evolution_menu = nil
         end
     end
     UIManager:close(self, "ui")
@@ -911,6 +1183,112 @@ function EntityListOverlay:showSearchDialog()
         }
     }
     UIManager:show(input_dlg)
+end
+
+function EntityListOverlay:showEvolutionFilterDialog()
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local filter_dialog
+    local p = self.plugin
+    local loc = p and p.loc
+
+    local function _tr(key, default)
+        if not loc or not loc.t then return default end
+        local res = loc:t(key)
+        if not res or res == key then return default end
+        return res
+    end
+
+    local is_key = (self.filter_key_only ~= false)
+    local check_key = is_key and "● " or "○ "
+    local check_all = not is_key and "● " or "○ "
+
+    filter_dialog = ButtonDialog:new{
+        modal = true,
+        title = _tr("evolution_filter_title", "Filter Milestones"),
+        buttons = {
+            {
+                {
+                    text = check_key .. _tr("evolution_filter_key", "Key Changes (Default)"),
+                    align = "left",
+                    callback = function()
+                        UIManager:close(filter_dialog)
+                        self.filter_key_only = true
+                        self.current_page = 1
+                        self:prepareItems()
+                        self:buildUI()
+                        UIManager:setDirty(self, "ui")
+                    end,
+                },
+            },
+            {
+                {
+                    text = check_all .. _tr("evolution_filter_all", "All Snapshots (Testing)"),
+                    align = "left",
+                    callback = function()
+                        UIManager:close(filter_dialog)
+                        self.filter_key_only = false
+                        self.current_page = 1
+                        self:prepareItems()
+                        self:buildUI()
+                        UIManager:setDirty(self, "ui")
+                    end,
+                },
+            },
+            {
+                {
+                    text = _tr("cancel", "Cancel"),
+                    callback = function() UIManager:close(filter_dialog) end,
+                }
+            }
+        }
+    }
+    UIManager:show(filter_dialog)
+end
+
+function EntityListOverlay:toggleEvolutionRevealFuture()
+    self.reveal_future = not self.reveal_future
+    self:prepareItems()
+    self:buildUI()
+    UIManager:setDirty(self, "ui")
+
+    local p = self.plugin
+    local cur_page = p and p.getCurrentDocPage and p:getCurrentDocPage()
+    local cur_chap = p and p.getCurrentChapterIndex and p:getCurrentChapterIndex(cur_page)
+    local total_m = #(self.all_milestones or {})
+    local has_any_locked = false
+    if self.all_milestones then
+        for _, m in ipairs(self.all_milestones) do
+            if m.chapter_index and cur_chap and m.chapter_index > cur_chap then
+                has_any_locked = true
+                break
+            elseif m.page and cur_page and m.page > cur_page then
+                has_any_locked = true
+                break
+            end
+        end
+    end
+
+    local InfoMessage = require("ui/widget/infomessage")
+    local ch_str = cur_chap and ("Ch. " .. tostring(cur_chap)) or ""
+    local pg_str = cur_page and ("p. " .. tostring(cur_page)) or ""
+    local pos_str = (ch_str ~= "" and pg_str ~= "") and (ch_str .. ", " .. pg_str) or (ch_str ~= "" and ch_str) or pg_str
+    if pos_str ~= "" then pos_str = " (" .. pos_str .. ")" end
+
+    local msg
+    if self.reveal_future then
+        if has_any_locked then
+            msg = "Revealed future milestones (spoiler protection disabled)."
+        else
+            msg = string.format("Future milestones revealed (all %d milestones are already within current reading position%s).", total_m, pos_str)
+        end
+    else
+        if has_any_locked then
+            msg = "Future milestones hidden (spoiler protection active)."
+        else
+            msg = string.format("Spoiler protection active (all %d milestones are already within current reading position%s).", total_m, pos_str)
+        end
+    end
+    UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
 end
 
 function EntityListOverlay:renderRow(item, content_w, row_h, is_focused, idx)
@@ -1379,23 +1757,726 @@ function EntityListOverlay:onItemSelect(item)
                 p.ui.document:gotoPage(item.page)
             end
         end)
+    elseif self.mode == "evolution" then
+        if item.is_locked then
+            local InfoMessage = require("ui/widget/infomessage")
+            UIManager:show(InfoMessage:new{
+                text = "Locked by spoiler protection. Keep reading to unlock this milestone.",
+                timeout = 3,
+            })
+            return
+        end
+        self.mode = "evolution_detail"
+        self.current_page = item.idx or 1
+        self:buildUI()
+        UIManager:setDirty(self, "ui")
     end
 end
 
+local function createPillWidget(text, is_solid, is_accent, font_size)
+    local bg = Blitbuffer.Color8(235)
+    local fg = Blitbuffer.Color8(60)
+    local border_color = Blitbuffer.Color8(180)
+    if is_solid then
+        bg = Blitbuffer.COLOR_BLACK
+        fg = Blitbuffer.COLOR_WHITE
+        border_color = Blitbuffer.COLOR_BLACK
+    elseif is_accent then
+        bg = Blitbuffer.Color8(220)
+        fg = Blitbuffer.Color8(30)
+        border_color = Blitbuffer.Color8(140)
+    end
+    local fs = font_size or 13
+    return FrameContainer:new{
+        background = bg,
+        bordersize = sc(1),
+        color = border_color,
+        radius = sc(3),
+        padding_top = sc(2),
+        padding_bottom = sc(2),
+        padding_left = sc(7),
+        padding_right = sc(7),
+        TextWidget:new{
+            text = text,
+            face = Font:getFace("cfont", fs),
+            bold = true,
+            fgcolor = fg,
+        },
+    }
+end
+
+function EntityListOverlay:renderEvolutionCard(item, content_w, card_h, is_focused, idx)
+    local inner_w = content_w - sc(32)
+    local is_card_focused = is_focused and (self.focus_zone == "cards")
+    local book_fs = self:getBookFontSize()
+
+    local card_ch_fs = math.max(15, math.min(17, book_fs - 5))
+    local card_page_fs = math.max(12, math.min(14, book_fs - 9))
+    local card_body_fs = math.max(13, math.min(15, book_fs - 8))
+    local card_pill_fs = 11
+
+    if item.is_locked then
+        local lock_icon = ImageWidget:new{
+            file = getAssetPath("lock.svg"),
+            width = sc(16),
+            height = sc(16),
+            scale_factor = 0,
+            is_icon = true,
+            alpha = true,
+        }
+        local ch_str = item.chapter_title or (item.chapter_index and ("Ch. " .. tostring(item.chapter_index))) or ("Milestone " .. tostring(item.idx))
+        local locked_str = string.format("%s · Hidden by spoiler protection", ch_str)
+        local locked_w = TextWidget:new{
+            text = locked_str,
+            face = Font:getFace("cfont", card_ch_fs),
+            bold = true,
+            fgcolor = Blitbuffer.Color8(120),
+            max_width = inner_w - sc(30),
+        }
+        local locked_row = HorizontalGroup:new{
+            align = "center",
+            lock_icon,
+            HorizontalSpan:new{ width = sc(8) },
+            locked_w,
+        }
+        local card_frame = FrameContainer:new{
+            padding = 0,
+            bordersize = is_card_focused and sc(2) or 0,
+            color = Blitbuffer.COLOR_BLACK,
+            background = is_card_focused and Blitbuffer.Color8(220) or Blitbuffer.Color8(248),
+            radius = sc(4),
+            width = content_w,
+            height = card_h,
+            CenterContainer:new{
+                dimen = Geom:new{ w = content_w, h = card_h },
+                LeftContainer:new{
+                    dimen = Geom:new{ w = inner_w, h = card_h - sc(14) },
+                    locked_row,
+                },
+            }
+        }
+        local card_item = makeTapItem(card_frame, function()
+            self.focus_zone = nil
+            self.focused_index = nil
+            self:onItemSelect(item)
+        end)
+        card_item.dimen = Geom:new{ w = content_w, h = card_h }
+        return card_item
+    end
+
+    -- 1. Chapter label formatting (deduplicate redundant "Ch. X · Chapter X")
+    local ch_label
+    local t = item.chapter_title
+    local idx = item.chapter_index
+    if idx and t and t ~= "" then
+        local t_lower = t:lower():gsub("%s+", " "):match("^%s*(.-)%s*$") or ""
+        local is_generic_ch = (t_lower == "chapter " .. tostring(idx))
+            or (t_lower == "ch. " .. tostring(idx))
+            or (t_lower == "ch " .. tostring(idx))
+            or (t_lower == tostring(idx))
+        if is_generic_ch then
+            ch_label = string.format("Chapter %d", idx)
+        else
+            ch_label = string.format("Ch. %d · %s", idx, t)
+        end
+    elseif t and t ~= "" then
+        ch_label = t
+    elseif idx then
+        ch_label = string.format("Chapter %d", idx)
+    else
+        ch_label = string.format("Milestone %d", item.idx)
+    end
+
+    local page_str = item.page and string.format("p. %d", item.page) or ""
+    local page_w = TextWidget:new{
+        text = page_str,
+        face = Font:getFace("cfont", card_page_fs),
+        bold = true,
+        fgcolor = Blitbuffer.Color8(100),
+    }
+    local page_w_sz = (page_w.getSize and page_w:getSize())
+    local page_size_w = (page_str ~= "") and (((page_w_sz and page_w_sz.w) or sc(36)) + sc(12)) or 0
+
+    -- 2. Pills
+    local pills = {}
+    if item.idx == 1 then
+        table.insert(pills, createPillWidget("FIRST SEEN", false, false, card_pill_fs))
+    end
+    if item.is_current then
+        table.insert(pills, createPillWidget("CURRENT", true, false, card_pill_fs))
+    end
+    if item.role_from and item.role_from ~= "" and item.role and item.role ~= "" then
+        table.insert(pills, createPillWidget(string.format("Role: %s → %s", item.role_from, item.role), false, true, card_pill_fs))
+    end
+    if item.status_from and item.status_from ~= "" and item.status and item.status ~= "" then
+        table.insert(pills, createPillWidget(string.format("Status: %s → %s", item.status_from, item.status), false, true, card_pill_fs))
+    end
+    if item.kind == "key" and item.idx > 1 then
+        table.insert(pills, createPillWidget("NEW DETAILS", false, false, card_pill_fs))
+    elseif item.kind == "reworded" then
+        table.insert(pills, createPillWidget("REWORDED", false, false, card_pill_fs))
+    end
+
+    local ch_w = TextWidget:new{
+        text = ch_label,
+        face = Font:getFace("cfont", card_ch_fs),
+        bold = true,
+        fgcolor = Blitbuffer.COLOR_BLACK,
+    }
+    local ch_sz = ch_w.getSize and ch_w:getSize()
+    local ch_sz_w = (ch_sz and ch_sz.w) or (#ch_label * 9)
+
+    local pills_w = 0
+    for _, p_w in ipairs(pills) do
+        local ps_sz = p_w.getSize and p_w:getSize()
+        local ps = (ps_sz and ps_sz.w) or sc(60)
+        pills_w = pills_w + ps + sc(6)
+    end
+
+    local pills_fit_inline = (#pills > 0) and ((ch_sz_w + pills_w + page_size_w) <= (inner_w - sc(8)))
+    local left_elements = { ch_w }
+    if pills_fit_inline then
+        for _, p_w in ipairs(pills) do
+            table.insert(left_elements, HorizontalSpan:new{ width = sc(6) })
+            table.insert(left_elements, p_w)
+        end
+    end
+    local left_group = HorizontalGroup:new(left_elements)
+    left_group.align = "center"
+
+    local top_row = OverlapGroup:new{
+        dimen = Geom:new{ w = inner_w, h = sc(22) },
+        LeftContainer:new{
+            dimen = Geom:new{ w = inner_w - page_size_w, h = sc(22) },
+            left_group,
+        },
+        RightContainer:new{
+            dimen = Geom:new{ w = inner_w, h = sc(22) },
+            page_w,
+        },
+    }
+
+    -- 3. Body text (Change headline > Narrative description > New keywords)
+    local body_str = ""
+    if item.change and item.change ~= "" and item.change ~= "---" then
+        body_str = item.change
+    elseif item.description and item.description ~= "" and item.description ~= "---" then
+        body_str = item.description
+    elseif item.new_terms and #item.new_terms > 0 then
+        body_str = "New: " .. table.concat(item.new_terms, " · ")
+    end
+    body_str = body_str:gsub("%s+", " "):match("^%s*(.-)%s*$") or ""
+    if #body_str > 180 then
+        body_str = safe_utf8_truncate(body_str, 175) .. "..."
+    end
+
+    local body_w = TextWidget:new{
+        text = body_str,
+        face = Font:getFace("cfont", card_body_fs),
+        fgcolor = Blitbuffer.Color8(40),
+        max_width = inner_w,
+    }
+
+    local card_vg_items = {
+        top_row,
+    }
+    if #pills > 0 and not pills_fit_inline then
+        local p_elements = {}
+        for pi, p_w in ipairs(pills) do
+            if pi > 1 then table.insert(p_elements, HorizontalSpan:new{ width = sc(6) }) end
+            table.insert(p_elements, p_w)
+        end
+        local p_group = HorizontalGroup:new(p_elements)
+        table.insert(card_vg_items, VerticalSpan:new{ width = sc(4) })
+        table.insert(card_vg_items, p_group)
+    end
+    if body_str ~= "" then
+        table.insert(card_vg_items, VerticalSpan:new{ width = sc(6) })
+        table.insert(card_vg_items, body_w)
+    end
+
+    local card_vg = VerticalGroup:new(card_vg_items)
+    card_vg.align = "left"
+
+    local card_frame = FrameContainer:new{
+        padding = 0,
+        bordersize = is_card_focused and sc(2) or 0,
+        color = Blitbuffer.COLOR_BLACK,
+        background = is_card_focused and Blitbuffer.Color8(210) or Blitbuffer.Color8(248),
+        radius = sc(4),
+        width = content_w,
+        height = card_h,
+        CenterContainer:new{
+            dimen = Geom:new{ w = content_w, h = card_h },
+            LeftContainer:new{
+                dimen = Geom:new{ w = inner_w, h = card_h - sc(14) },
+                card_vg,
+            },
+        }
+    }
+
+    local card_item = makeTapItem(card_frame, function()
+        self.focus_zone = nil
+        self.focused_index = nil
+        self:onItemSelect(item)
+    end)
+    card_item.dimen = Geom:new{ w = content_w, h = card_h }
+    return card_item
+end
+
+function EntityListOverlay:buildEvolutionDetailUI()
+    local sw = self.sw
+    local sh = self.sh
+    self.items_per_page = 1
+    self.total_pages = #(self.items or {})
+    if self.total_pages < 1 then self.total_pages = 1 end
+    if self.current_page > self.total_pages then self.current_page = self.total_pages end
+    if self.current_page < 1 then self.current_page = 1 end
+
+    local cur_idx = self.current_page
+    local cur_item = self.items and self.items[cur_idx]
+    if not cur_item then
+        self.mode = "evolution"
+        self:buildUI()
+        return
+    end
+
+    local inner_w = sw - sc(32)
+
+    -- Header Bar
+    local back_btn = createIconButton{
+        icon = "chevron-left.svg",
+        size = sc(30),
+        width = sc(44),
+        height = sc(44),
+        allow_flash = false,
+        callback = function()
+            self.mode = "evolution"
+            self:buildUI()
+            UIManager:setDirty(self, "ui")
+        end,
+    }
+
+    local book_fs = self:getBookFontSize()
+    local name_fs = math.max(18, math.min(21, book_fs - 3))
+    local info_fs = math.max(13, math.min(15, book_fs - 8))
+    local section_hdr_fs = math.max(13, math.min(15, book_fs - 8))
+    local body_fs = math.max(16, book_fs)
+    local change_fs = math.max(15, book_fs - 2)
+    local ev_fs = math.max(14, book_fs - 3)
+    local pill_fs = 11
+    local footer_fs = math.max(13, math.min(15, book_fs - 8))
+
+    local name_str = (self.entity and self.entity.name) or "Entity"
+    local name_w = TextWidget:new{
+        text = name_str,
+        face = Font:getFace("cfont", name_fs),
+        bold = true,
+        fgcolor = Blitbuffer.COLOR_BLACK,
+        max_width = inner_w - sc(200),
+    }
+
+    local left_header = HorizontalGroup:new{
+        align = "center",
+        back_btn,
+        HorizontalSpan:new{ width = sc(4) },
+        name_w,
+    }
+
+    local ch_info_str
+    if cur_item.chapter_index and cur_item.page then
+        ch_info_str = string.format("Ch. %d · p. %d", cur_item.chapter_index, cur_item.page)
+    elseif cur_item.chapter_title and cur_item.page then
+        ch_info_str = string.format("%s · p. %d", cur_item.chapter_title, cur_item.page)
+    elseif cur_item.chapter_index then
+        ch_info_str = string.format("Ch. %d", cur_item.chapter_index)
+    elseif cur_item.page then
+        ch_info_str = string.format("p. %d", cur_item.page)
+    else
+        ch_info_str = string.format("Milestone %d", cur_idx)
+    end
+
+    local ch_info_w = TextWidget:new{
+        text = ch_info_str,
+        face = Font:getFace("cfont", info_fs),
+        bold = true,
+        fgcolor = Blitbuffer.Color8(90),
+    }
+
+    local close_btn = createIconButton{
+        icon = "x.svg",
+        size = sc(32),
+        width = sc(48),
+        height = sc(48),
+        allow_flash = false,
+        callback = function() self:close() end,
+    }
+
+    local right_elements = { ch_info_w, HorizontalSpan:new{ width = sc(6) }, close_btn }
+    local right_header = HorizontalGroup:new(right_elements)
+    right_header.align = "center"
+
+    local header_row = OverlapGroup:new{
+        dimen = Geom:new{ w = inner_w, h = sc(48) },
+        LeftContainer:new{
+            dimen = Geom:new{ w = inner_w - sc(120), h = sc(48) },
+            left_header,
+        },
+        RightContainer:new{
+            dimen = Geom:new{ w = inner_w, h = sc(48) },
+            right_header,
+        },
+    }
+
+    local header_frame = FrameContainer:new{
+        padding_left = sc(16),
+        padding_right = sc(16),
+        padding_top = sc(10),
+        padding_bottom = sc(4),
+        bordersize = 0,
+        width = sw,
+        VerticalGroup:new{
+            align = "left",
+            header_row,
+            VerticalSpan:new{ width = sc(4) },
+            LineWidget:new{
+                background = Blitbuffer.COLOR_DARK_GRAY,
+                dimen = Geom:new{ w = inner_w, h = sc(1) },
+            },
+        }
+    }
+
+    -- Content items
+    local content_items = {}
+
+    if cur_item.is_locked then
+        table.insert(content_items, VerticalSpan:new{ width = sc(20) })
+        local lock_icon = ImageWidget:new{
+            file = getAssetPath("lock.svg"),
+            width = sc(32),
+            height = sc(32),
+            scale_factor = 0,
+            is_icon = true,
+            alpha = true,
+        }
+        table.insert(content_items, CenterContainer:new{
+            dimen = Geom:new{ w = inner_w, h = sc(40) },
+            lock_icon,
+        })
+        table.insert(content_items, VerticalSpan:new{ width = sc(12) })
+        local locked_msg = TextBoxWidget:new{
+            text = "This milestone is hidden by spoiler protection because it occurs beyond your current reading position.\n\nTap below to reveal future milestones for testing.",
+            face = Font:getFace("cfont", math.max(16, book_fs - 2)),
+            width = inner_w,
+            alignment = "center",
+            fgcolor = Blitbuffer.Color8(70),
+        }
+        table.insert(content_items, locked_msg)
+    else
+        -- Pills row
+        local pills = {}
+        if cur_item.idx == 1 then
+            table.insert(pills, createPillWidget("FIRST SEEN", false, false, pill_fs))
+        end
+        if cur_item.is_current then
+            table.insert(pills, createPillWidget("CURRENT", true, false, pill_fs))
+        end
+        if cur_item.role_from and cur_item.role_from ~= "" and cur_item.role and cur_item.role ~= "" then
+            table.insert(pills, createPillWidget(string.format("Role: %s → %s", cur_item.role_from, cur_item.role), false, true, pill_fs))
+        end
+        if cur_item.status_from and cur_item.status_from ~= "" and cur_item.status and cur_item.status ~= "" then
+            table.insert(pills, createPillWidget(string.format("Status: %s → %s", cur_item.status_from, cur_item.status), false, true, pill_fs))
+        end
+        if cur_item.kind == "key" and cur_item.idx > 1 then
+            table.insert(pills, createPillWidget("NEW DETAILS", false, false, pill_fs))
+        elseif cur_item.kind == "reworded" then
+            table.insert(pills, createPillWidget("REWORDED", false, false, pill_fs))
+        end
+
+        if #pills > 0 then
+            local p_elements = {}
+            for pi, p_w in ipairs(pills) do
+                if pi > 1 then table.insert(p_elements, HorizontalSpan:new{ width = sc(6) }) end
+                table.insert(p_elements, p_w)
+            end
+            table.insert(content_items, HorizontalGroup:new(p_elements))
+            table.insert(content_items, VerticalSpan:new{ width = sc(8) })
+        end
+
+        -- 1. WHAT CHANGED Section
+        local change_lines = {}
+        if cur_item.role_from and cur_item.role_from ~= "" and cur_item.role and cur_item.role ~= "" then
+            table.insert(change_lines, string.format("• Role: %s → %s", cur_item.role_from, cur_item.role))
+        end
+        if cur_item.status_from and cur_item.status_from ~= "" and cur_item.status and cur_item.status ~= "" then
+            table.insert(change_lines, string.format("• Status: %s → %s", cur_item.status_from, cur_item.status))
+        end
+        if cur_item.change and cur_item.change ~= "" and cur_item.change ~= "---" then
+            table.insert(change_lines, "• " .. cur_item.change)
+        end
+        if cur_item.new_sentences and #cur_item.new_sentences > 0 then
+            for _, s in ipairs(cur_item.new_sentences) do
+                table.insert(change_lines, "+ " .. s)
+            end
+        end
+        if #change_lines == 0 then
+            if cur_item.kind == "reworded" then
+                table.insert(change_lines, "Reworded only: no new facts recorded since the previous milestone.")
+            elseif cur_idx == 1 then
+                table.insert(change_lines, "Initial character introduction.")
+            end
+        end
+
+        table.insert(content_items, TextWidget:new{
+            text = "WHAT CHANGED",
+            face = Font:getFace("cfont", section_hdr_fs),
+            bold = true,
+            fgcolor = Blitbuffer.Color8(90),
+        })
+        table.insert(content_items, VerticalSpan:new{ width = sc(2) })
+        table.insert(content_items, LineWidget:new{
+            background = Blitbuffer.Color8(200),
+            dimen = Geom:new{ w = inner_w, h = sc(1) },
+        })
+        table.insert(content_items, VerticalSpan:new{ width = sc(4) })
+        local change_box = TextBoxWidget:new{
+            text = table.concat(change_lines, "\n"),
+            face = Font:getFace("cfont", change_fs),
+            width = inner_w,
+            alignment = "left",
+            fgcolor = Blitbuffer.COLOR_BLACK,
+        }
+        table.insert(content_items, change_box)
+        table.insert(content_items, VerticalSpan:new{ width = sc(12) })
+
+        -- 2. AT THIS POINT Section
+        table.insert(content_items, TextWidget:new{
+            text = "AT THIS POINT",
+            face = Font:getFace("cfont", section_hdr_fs),
+            bold = true,
+            fgcolor = Blitbuffer.Color8(90),
+        })
+        table.insert(content_items, VerticalSpan:new{ width = sc(2) })
+        table.insert(content_items, LineWidget:new{
+            background = Blitbuffer.Color8(200),
+            dimen = Geom:new{ w = inner_w, h = sc(1) },
+        })
+        table.insert(content_items, VerticalSpan:new{ width = sc(4) })
+
+        local desc_text = cur_item.description or ""
+        local max_chars = 900
+        local is_truncated = false
+        if #desc_text > max_chars then
+            desc_text = safe_utf8_truncate(desc_text, max_chars) .. "..."
+            is_truncated = true
+        end
+
+        local desc_fs = (#desc_text > 550) and math.max(16, book_fs - 2) or body_fs
+        local desc_box = TextBoxWidget:new{
+            text = desc_text,
+            face = Font:getFace("cfont", desc_fs),
+            width = inner_w,
+            alignment = "left",
+            fgcolor = Blitbuffer.COLOR_BLACK,
+        }
+        table.insert(content_items, desc_box)
+
+        if is_truncated then
+            table.insert(content_items, VerticalSpan:new{ width = sc(4) })
+            local read_more_frame = FrameContainer:new{
+                padding = sc(4),
+                padding_left = sc(10),
+                padding_right = sc(10),
+                bordersize = sc(1),
+                color = Blitbuffer.COLOR_BLACK,
+                background = Blitbuffer.Color8(235),
+                radius = sc(3),
+                TextWidget:new{
+                    text = "Read Full Description...",
+                    face = Font:getFace("cfont", math.max(14, book_fs - 4)),
+                    bold = true,
+                    fgcolor = Blitbuffer.COLOR_BLACK,
+                }
+            }
+            local read_more_btn = makeTapItem(read_more_frame, function()
+                local TextViewer = require("ui/widget/textviewer")
+                UIManager:show(TextViewer:new{
+                    modal = true,
+                    title = name_str .. " - " .. ch_info_str,
+                    text = cur_item.description or "",
+                })
+            end)
+            table.insert(content_items, read_more_btn)
+        end
+
+        -- 3. EVIDENCE Section (if present)
+        if cur_item.evidence and cur_item.evidence ~= "" and cur_item.evidence ~= "---" then
+            table.insert(content_items, VerticalSpan:new{ width = sc(12) })
+            table.insert(content_items, TextWidget:new{
+                text = "EVIDENCE",
+                face = Font:getFace("cfont", section_hdr_fs),
+                bold = true,
+                fgcolor = Blitbuffer.Color8(90),
+            })
+            table.insert(content_items, VerticalSpan:new{ width = sc(2) })
+            table.insert(content_items, LineWidget:new{
+                background = Blitbuffer.Color8(200),
+                dimen = Geom:new{ w = inner_w, h = sc(1) },
+            })
+            table.insert(content_items, VerticalSpan:new{ width = sc(4) })
+            local ev_clean = cur_item.evidence:gsub('^"(.*)"$', '%1')
+            local ev_box = TextBoxWidget:new{
+                text = "“" .. ev_clean .. "”",
+                face = Font:getFace("cfont", ev_fs),
+                width = inner_w,
+                alignment = "left",
+                fgcolor = Blitbuffer.Color8(60),
+            }
+            table.insert(content_items, ev_box)
+        end
+    end
+
+    local detail_vg = VerticalGroup:new(content_items)
+    detail_vg.align = "left"
+
+    local content_frame = FrameContainer:new{
+        padding_left = sc(16),
+        padding_right = sc(16),
+        padding_top = sc(8),
+        bordersize = 0,
+        width = sw,
+        detail_vg,
+    }
+
+    -- Footer Bar (Milestone X of Y)
+    local footer_h = sc(48)
+    local prev_btn = createIconButton{
+        icon = "chevron-left.svg",
+        size = sc(30),
+        width = sc(44),
+        height = sc(42),
+        allow_flash = false,
+        callback = function()
+            if self.is_touch_device then self.focus_zone = nil end
+            self:onPrevPage()
+        end,
+    }
+
+    local milestone_label = TextWidget:new{
+        text = string.format("Milestone %d of %d", self.current_page, math.max(1, self.total_pages)),
+        face = Font:getFace("cfont", footer_fs),
+        bold = true,
+        fgcolor = Blitbuffer.COLOR_BLACK,
+    }
+
+    local milestone_frame = FrameContainer:new{
+        padding_top = sc(4),
+        padding_bottom = sc(4),
+        padding_left = sc(10),
+        padding_right = sc(10),
+        bordersize = 0,
+        radius = sc(4),
+        milestone_label,
+    }
+
+    local milestone_item = makeTapItem(milestone_frame, function()
+        if self.is_touch_device then self.focus_zone = nil end
+        self:onJumpPage()
+    end)
+
+    local next_btn = createIconButton{
+        icon = "chevron-right.svg",
+        size = sc(30),
+        width = sc(44),
+        height = sc(42),
+        allow_flash = false,
+        callback = function()
+            if self.is_touch_device then self.focus_zone = nil end
+            self:onNextPage()
+        end,
+    }
+
+    local footer_group = HorizontalGroup:new{
+        align = "center",
+        prev_btn,
+        HorizontalSpan:new{ width = sc(16) },
+        milestone_item,
+        HorizontalSpan:new{ width = sc(16) },
+        next_btn,
+    }
+
+    local footer_frame = FrameContainer:new{
+        padding_top = 0,
+        padding_bottom = 0,
+        bordersize = 0,
+        width = sw,
+        height = footer_h,
+        VerticalGroup:new{
+            align = "left",
+            CenterContainer:new{
+                dimen = Geom:new{ w = sw, h = sc(1) },
+                LineWidget:new{
+                    background = Blitbuffer.Color8(180),
+                    dimen = Geom:new{ w = sw - sc(32), h = sc(1) },
+                },
+            },
+            CenterContainer:new{
+                dimen = Geom:new{ w = sw, h = footer_h - sc(1) },
+                footer_group,
+            },
+        }
+    }
+
+    local main_surface = FrameContainer:new{
+        padding = 0,
+        bordersize = 0,
+        background = Blitbuffer.COLOR_WHITE,
+        width = sw,
+        height = sh,
+        VerticalGroup:new{
+            align = "left",
+            header_frame,
+            content_frame,
+        }
+    }
+
+    local bottom_pinned_footer = BottomContainer:new{
+        dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh },
+        footer_frame,
+    }
+
+    self[1] = OverlapGroup:new{
+        dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh },
+        main_surface,
+        bottom_pinned_footer,
+    }
+    self.dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh }
+end
+
 function EntityListOverlay:buildUI()
+    if self.mode == "evolution_detail" then
+        self:buildEvolutionDetailUI()
+        return
+    end
+
     local sw = self.sw
     local sh = self.sh
     local p = self.plugin
     local loc = p and p.loc
 
     -- ── 1. Top Header Bar (Storefront style touch buttons) ────────────────────
-    local btn_size = sc(26)
+    local btn_size = sc(32)
     local btn_w = sc(48)
     local btn_h = sc(48)
     local btn_gap = sc(4)
 
     local title_text_str = "Characters"
-    if self.mode == "terms" then
+    if self.mode == "evolution" then
+        local ent_name = (self.entity and self.entity.name) or "Entity"
+        local title_tmpl = (loc and loc:t("evolution_title")) or "Story Arc: %s"
+        if title_tmpl == "evolution_title" then title_tmpl = "Story Arc: %s" end
+        title_text_str = title_tmpl:format(ent_name)
+    elseif self.mode == "terms" then
         title_text_str = (loc and loc:t("menu_terms")) or "Glossary"
     elseif self.mode == "locations" then
         title_text_str = (loc and loc:t("menu_locations")) or "Locations"
@@ -1422,7 +2503,7 @@ function EntityListOverlay:buildUI()
     end
 
     local is_scanning = (self.mode == "mentions") and p and p.active_mention_scan and p.active_mention_scan.entity_name == (self.entity and self.entity.name)
-    local total_count = #(self.raw_items or {})
+    local total_count = self.unfiltered_visible_count or #(self.items or {})
     local header_title
     if is_scanning then
         header_title = title_text_str .. " (Scanning... " .. tostring(p.active_mention_scan.chapter_idx or 0) .. "/" .. tostring(p.active_mention_scan.total_chapters or 0) .. ")"
@@ -1456,48 +2537,53 @@ function EntityListOverlay:buildUI()
         })
     end
 
-    -- A. Search button
-    addHeaderAction("search", "search.svg", function() self:showSearchDialog() end)
-
-    if self.mode == "mentions" then
-        -- Refresh mentions button
-        addHeaderAction("refresh", "rotate-cw.svg", function()
-            if p then
-                if p.active_mention_scan and p.active_mention_scan.cancel_handle then
-                    p.active_mention_scan.cancel_handle:cancel()
-                end
-                p.active_mention_scan = nil
-                if self.entity then
-                    self.entity.mentions = {}
-                    self.entity.last_mention_page = nil
-                    p:showMentionsForEntity(self.entity)
-                end
-            end
-        end)
+    if self.mode == "evolution" then
+        -- Filter button (Key vs All snapshots)
+        addHeaderAction("filter", "filter.svg", function() self:showEvolutionFilterDialog() end)
     else
-        -- B. Merge Duplicates button (characters and locations only)
-        if self.mode == "characters" or self.mode == "locations" then
-            addHeaderAction("merge", "git-merge.svg", function() self:showMergeDialog() end)
-        end
+        -- A. Search button
+        addHeaderAction("search", "search.svg", function() self:showSearchDialog() end)
 
-        -- C. Fetch More button (Characters & Terms; Timeline specifically omits it per user requirement)
-        if self.mode == "characters" or self.mode == "terms" then
-            addHeaderAction("fetch", "plus.svg", function()
-                if self.mode == "characters" then
-                    p:fetchMoreCharacters()
-                elseif self.mode == "terms" then
-                    p:fetchMoreTerms()
+        if self.mode == "mentions" then
+            -- Refresh mentions button
+            addHeaderAction("refresh", "rotate-cw.svg", function()
+                if p then
+                    if p.active_mention_scan and p.active_mention_scan.cancel_handle then
+                        p.active_mention_scan.cancel_handle:cancel()
+                    end
+                    p.active_mention_scan = nil
+                    if self.entity then
+                        self.entity.mentions = {}
+                        self.entity.last_mention_page = nil
+                        p:showMentionsForEntity(self.entity)
+                    end
                 end
             end)
-        end
+        else
+            -- B. Merge Duplicates button (characters and locations only)
+            if self.mode == "characters" or self.mode == "locations" then
+                addHeaderAction("merge", "git-merge.svg", function() self:showMergeDialog() end)
+            end
 
-        -- D. Sort button (Sliders icon from Feather Icons)
-        if self.mode ~= "timeline" then
-            addHeaderAction("sort", "sliders.svg", function() self:showSortDialog() end)
+            -- C. Fetch More button (Characters & Terms; Timeline specifically omits it per user requirement)
+            if self.mode == "characters" or self.mode == "terms" then
+                addHeaderAction("fetch", "plus.svg", function()
+                    if self.mode == "characters" then
+                        p:fetchMoreCharacters()
+                    elseif self.mode == "terms" then
+                        p:fetchMoreTerms()
+                    end
+                end)
+            end
+
+            -- D. Sort button (Sliders icon from Feather Icons)
+            if self.mode ~= "timeline" then
+                addHeaderAction("sort", "sliders.svg", function() self:showSortDialog() end)
+            end
         end
     end
 
-    -- E. Close button (x.svg from Feather Icons, allow_flash=false)
+    -- Close button (x.svg from Feather Icons, allow_flash=false)
     addHeaderAction("close", "x.svg", function() self:close() end)
 
     local header_actions_group = HorizontalGroup:new(action_btns)
@@ -1510,9 +2596,10 @@ function EntityListOverlay:buildUI()
     local title_container_w = row_w - total_btns_w - sc(12)
     local title_max_w = math.max(sc(140), title_container_w)
 
+    local book_fs = self:getBookFontSize()
     local title_w = TextWidget:new{
         text = header_title,
-        face = Font:getFace("cfont", is_filtered and 18 or 24),
+        face = Font:getFace("cfont", is_filtered and math.max(16, math.min(18, book_fs - 5)) or math.max(18, math.min(21, book_fs - 3))),
         bold = true,
         fgcolor = Blitbuffer.COLOR_BLACK,
         max_width = title_max_w,
@@ -1523,7 +2610,7 @@ function EntityListOverlay:buildUI()
         local sub_info = "Filter: \"" .. self.search_query .. "\" (" .. tostring(#(self.items or {})) .. " matches)"
         local sub_w = TextWidget:new{
             text = sub_info,
-            face = Font:getFace("cfont", 12),
+            face = Font:getFace("cfont", math.max(12, math.min(13, book_fs - 9))),
             fgcolor = Blitbuffer.Color8(85),
             max_width = title_max_w,
         }
@@ -1574,7 +2661,8 @@ function EntityListOverlay:buildUI()
 
     local is_timeline = (self.mode == "timeline")
     local is_mentions = (self.mode == "mentions")
-    local row_h = sc(64)
+    local is_evolution = (self.mode == "evolution")
+    local row_h = is_evolution and sc(72) or sc(64)
     local divider_h = sc(1)
     local items_per_page = math.max(1, math.floor(avail_content_h / (row_h + divider_h)))
 
@@ -1839,7 +2927,12 @@ function EntityListOverlay:buildUI()
                 end
             else
                 local is_focused = (self.focus_zone == "cards" and idx == self.focused_index)
-                local row_widget = self:renderRow(it, sw, row_h, is_focused, idx)
+                local row_widget
+                if self.mode == "evolution" then
+                    row_widget = self:renderEvolutionCard(it, sw, row_h, is_focused, idx)
+                else
+                    row_widget = self:renderRow(it, sw, row_h, is_focused, idx)
+                end
                 table.insert(page_content_vg, row_widget)
                 if idx < #page_items then
                     table.insert(page_content_vg, CenterContainer:new{
@@ -1862,9 +2955,9 @@ function EntityListOverlay:buildUI()
     }
 
     -- ── 3. Footer Bar with Storefront Pagination ──────────────────────────────
-    local nav_btn_size = sc(22)
-    local nav_btn_w = sc(40)
-    local nav_btn_h = sc(38)
+    local nav_btn_size = sc(30)
+    local nav_btn_w = sc(44)
+    local nav_btn_h = sc(42)
 
     local is_prev_focused = (self.focus_zone == "footer" and self.footer_focus_idx == 1)
     local is_page_focused = (self.focus_zone == "footer" and self.footer_focus_idx == 2)
@@ -1885,7 +2978,7 @@ function EntityListOverlay:buildUI()
 
     local page_label = TextWidget:new{
         text = string.format("Page %d of %d", self.current_page, math.max(1, self.total_pages)),
-        face = Font:getFace("cfont", 15),
+        face = Font:getFace("cfont", math.max(13, math.min(15, book_fs - 8))),
         bold = true,
         fgcolor = Blitbuffer.COLOR_BLACK,
     }

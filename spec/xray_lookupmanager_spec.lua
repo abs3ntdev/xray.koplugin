@@ -402,4 +402,122 @@ describe("xray_lookupmanager", function()
             assert.are.equal(100, r2[1].score)
         end)
     end)
+
+    describe("lookupAutoPopup (Issue #152)", function()
+        before_each(function()
+            plugin.characters = {
+                { name = "Sherlock Holmes", _norm_name = "sherlock holmes", aliases = { "Sherlock", "Consulting Detective" }, _norm_aliases = { "sherlock", "consulting detective" } },
+                { name = "John Watson", _norm_name = "john watson", aliases = { "Watson" }, _norm_aliases = { "watson" } },
+                { name = "Родион Раскольников", _norm_name = "родион раскольников", aliases = { "Раскольников" }, _norm_aliases = { "раскольников" } },
+                { name = "罗辑", _norm_name = "罗辑" },
+            }
+            plugin.locations = {
+                { name = "221B Baker Street", _norm_name = "221b baker street" }
+            }
+            plugin.terms = {
+                { name = "Quantum Entanglement", _norm_name = "quantum entanglement" },
+                { name = "Red Rising", _norm_name = "red rising" },
+            }
+        end)
+
+        it("matches exact names and exact aliases", function()
+            local r1 = lm:lookupAutoPopup("John Watson")
+            assert.are.equal(1, #r1)
+            assert.are.equal("John Watson", r1[1].item.name)
+
+            local r2 = lm:lookupAutoPopup("Sherlock")
+            assert.are.equal(1, #r2)
+            assert.are.equal("Sherlock Holmes", r2[1].item.name)
+        end)
+
+        it("matches single-word partial names and inflections", function()
+            local r_holmes = lm:lookupAutoPopup("Holmes")
+            assert.are.equal(1, #r_holmes)
+            assert.are.equal("Sherlock Holmes", r_holmes[1].item.name)
+
+            local r_watson = lm:lookupAutoPopup("Watson's")
+            assert.are.equal(1, #r_watson)
+            assert.are.equal("John Watson", r_watson[1].item.name)
+
+            local r_rus = lm:lookupAutoPopup("Раскольникова")
+            assert.are.equal(1, #r_rus)
+            assert.are.equal("Родион Раскольников", r_rus[1].item.name)
+        end)
+
+        it("matches CJK entity names", function()
+            local r_cjk = lm:lookupAutoPopup("罗辑")
+            assert.are.equal(1, #r_cjk)
+            assert.are.equal("罗辑", r_cjk[1].item.name)
+        end)
+
+        it("rejects multi-word sentence highlights containing entity names", function()
+            -- User highlighted a sentence that happens to contain John Watson
+            local r_sentence = lm:lookupAutoPopup("John Watson and someone else")
+            assert.are.equal(0, #r_sentence)
+
+            local r_sentence2 = lm:lookupAutoPopup("Sherlock Holmes walked down the street")
+            assert.are.equal(0, #r_sentence2)
+
+            local r_cjk_sentence = lm:lookupAutoPopup("罗辑在冥王星上行走")
+            assert.are.equal(0, #r_cjk_sentence)
+        end)
+
+        it("rejects low-confidence partial glossary term matches while accepting exact matches", function()
+            -- Exact glossary term
+            local r_exact = lm:lookupAutoPopup("Quantum Entanglement")
+            assert.are.equal(1, #r_exact)
+            assert.are.equal("Quantum Entanglement", r_exact[1].item.name)
+
+            -- Single common word "quantum" inside "Quantum Entanglement" has score < 70
+            local r_partial = lm:lookupAutoPopup("Quantum")
+            assert.are.equal(0, #r_partial)
+        end)
+
+        it("returns empty list for empty or short text", function()
+            assert.are.equal(0, #lm:lookupAutoPopup(""))
+            assert.are.equal(0, #lm:lookupAutoPopup("a"))
+            assert.are.equal(0, #lm:lookupAutoPopup(nil))
+        end)
+    end)
+
+    describe("handleLookup with opts (Issue #152)", function()
+        local show_result_args
+        local button_dialog_opts
+
+        before_each(function()
+            show_result_args = nil
+            button_dialog_opts = nil
+            lm.showResult = function(self_lm, item, item_type, opts)
+                show_result_args = { item = item, item_type = item_type, opts = opts }
+            end
+
+            plugin.characters = {
+                { name = "Sherlock Holmes", _norm_name = "sherlock holmes" },
+            }
+        end)
+
+        it("forwards restore_menu_cb in opts for single match", function()
+            local cb_called = false
+            local dummy_cb = function() cb_called = true end
+
+            lm:handleLookup("Sherlock Holmes", 0, 10, { restore_menu_cb = dummy_cb })
+
+            assert.is_not_nil(show_result_args)
+            assert.are.equal("Sherlock Holmes", show_result_args.item.name)
+            assert.is_not_nil(show_result_args.opts)
+            assert.are.equal(dummy_cb, show_result_args.opts.restore_menu_cb)
+        end)
+
+        it("uses candidates provided in opts when available", function()
+            local custom_cand = {
+                item = { name = "Custom Entity" },
+                item_type = "character",
+                score = 100,
+            }
+            lm:handleLookup("Whatever", 0, 5, { candidates = { custom_cand } })
+
+            assert.is_not_nil(show_result_args)
+            assert.are.equal("Custom Entity", show_result_args.item.name)
+        end)
+    end)
 end)

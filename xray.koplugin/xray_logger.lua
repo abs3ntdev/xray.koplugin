@@ -22,7 +22,7 @@ local Logger = {
     max_size = 512 * 1024, -- 512 KB
     _buf = {},
     _buf_count = 0,
-    _buffer_limit = 20,
+    _buffer_limit = 1,
 }
 
 function Logger:init(path)

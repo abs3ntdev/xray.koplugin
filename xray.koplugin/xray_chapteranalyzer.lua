@@ -698,24 +698,172 @@ function ChapterAnalyzer:getTextForAnalysis(ui, max_len, progress_callback, curr
     return book_text
 end
 
--- Get highlights and notes for analysis
-function ChapterAnalyzer:getAnnotationsForAnalysis(ui)
+-- Get highlights and notes for analysis (filtered up to max_page to prevent future leaks)
+function ChapterAnalyzer:getAnnotationsForAnalysis(ui, max_page)
     local annotations_text = ""
+    if not max_page and ui then
+        if type(ui.getCurrentPage) == "function" then
+            pcall(function() max_page = ui:getCurrentPage() end)
+        elseif ui.document and type(ui.document.getCurrentPage) == "function" then
+            pcall(function() max_page = ui.document:getCurrentPage() end)
+        end
+    end
+    max_page = tonumber(max_page)
     
     -- Try to get annotations from the document/UI
     -- In KOReader, annotations are typically in ui.annotation.annotations
-    if ui.annotation and ui.annotation.annotations then
+    if ui and ui.annotation and ui.annotation.annotations then
         for _, annot in ipairs(ui.annotation.annotations) do
-            if annot.text and #annot.text > 0 then
-                annotations_text = annotations_text .. "Highlight: " .. annot.text .. "\n"
+            local annot_page = tonumber(annot.page)
+            if not annot_page and type(annot.page) == "string" and ui.document and type(ui.document.getPageFromXPointer) == "function" then
+                local ok, resolved = pcall(ui.document.getPageFromXPointer, ui.document, annot.page)
+                if ok then
+                    annot_page = tonumber(resolved)
+                end
             end
-            if annot.note and #annot.note > 0 then
-                annotations_text = annotations_text .. "Note: " .. annot.note .. "\n"
+            if not annot_page then
+                annot_page = tonumber(annot.pageno)
+                    or (type(annot.pos0) == "table" and tonumber(annot.pos0.page))
+            end
+            if not annot_page and type(annot.pos0) == "string" and ui.document and type(ui.document.getPageFromXPointer) == "function" then
+                local ok, resolved = pcall(ui.document.getPageFromXPointer, ui.document, annot.pos0)
+                if ok then
+                    annot_page = tonumber(resolved)
+                end
+            end
+            if not max_page or not annot_page or annot_page <= max_page then
+                if annot.text and #annot.text > 0 then
+                    annotations_text = annotations_text .. "Highlight: " .. annot.text .. "\n"
+                end
+                if annot.note and #annot.note > 0 then
+                    annotations_text = annotations_text .. "Note: " .. annot.note .. "\n"
+                end
             end
         end
     end
     
     return #annotations_text > 0 and annotations_text or nil
+end
+
+-- Subdivide oversized TOC entries (e.g. books with only "Parts" like Carrie, or chapters > 60 pages)
+-- into granular virtual segments for sequential Story Arc prefetching.
+function ChapterAnalyzer:expandOversizedTocChapters(toc, total_pages, max_pages_per_segment)
+    if not toc or #toc == 0 then return {} end
+    max_pages_per_segment = max_pages_per_segment or 60
+    total_pages = total_pages or 0
+
+    local expanded = {}
+    local global_toc_index = 1
+
+    for i, ch in ipairs(toc) do
+        local parent_idx = ch.parent_toc_index or ch.toc_index or i
+        local parent_name = ch.parent_title or ch.title or ("Chapter " .. tostring(parent_idx))
+        local next_page = nil
+        for j = i + 1, #toc do
+            if toc[j] and toc[j].page and toc[j].page > (ch.page or 0) then
+                next_page = toc[j].page
+                break
+            end
+        end
+        if not next_page and total_pages > (ch.page or 0) then
+            next_page = total_pages + 1
+        end
+
+        local page_span = (ch.page and next_page and next_page > ch.page) and (next_page - ch.page) or 0
+        if page_span > max_pages_per_segment then
+            local num_parts = math.ceil(page_span / max_pages_per_segment)
+            local pages_per_part = math.ceil(page_span / num_parts)
+            for part = 1, num_parts do
+                local seg_start = ch.page + (part - 1) * pages_per_part
+                local seg_end = math.min(next_page - 1, seg_start + pages_per_part - 1)
+                local sub_ch = {
+                    title = string.format("%s (%d/%d)", ch.title or "Chapter", part, num_parts),
+                    parent_title = parent_name,
+                    parent_toc_index = parent_idx,
+                    part_index = part,
+                    total_parts = num_parts,
+                    page = seg_start,
+                    end_page = seg_end,
+                    toc_index = global_toc_index,
+                    depth = ch.depth,
+                    is_virtual_segment = true,
+                    xpointer = (part == 1 and ch.xpointer) or nil,
+                }
+                table.insert(expanded, sub_ch)
+                global_toc_index = global_toc_index + 1
+            end
+        else
+            local cloned = {
+                title = ch.title,
+                parent_title = parent_name,
+                parent_toc_index = parent_idx,
+                part_index = 1,
+                total_parts = 1,
+                page = ch.page,
+                end_page = next_page and (next_page - 1) or nil,
+                toc_index = global_toc_index,
+                depth = ch.depth,
+                xpointer = ch.xpointer,
+            }
+            table.insert(expanded, cloned)
+            global_toc_index = global_toc_index + 1
+        end
+    end
+
+    return expanded
+end
+
+-- Get bounded text for a single chapter (#150 & #131 sequential pipeline)
+function ChapterAnalyzer:getSingleChapterText(ui, chapter, next_chapter, current_page, max_len)
+    if not ui or not ui.document or not chapter then return "" end
+    max_len = max_len or 40000
+
+    -- If reader is inside this chapter and spoiler protection is needed, strictly truncate to current page
+    if current_page and chapter.page and chapter.page <= current_page then
+        local next_page = chapter.end_page or (next_chapter and next_chapter.page)
+        if not next_page or next_page > current_page then
+            local end_page = self:getEndPageForCurrentPage(ui, current_page)
+            return self:getTextFromPageRange(ui, chapter.page, end_page, max_len) or ""
+        end
+    end
+
+    -- Explicit page bounds (e.g. virtual segment from expandOversizedTocChapters)
+    if chapter.end_page and chapter.page then
+        local txt = self:getTextFromPageRange(ui, chapter.page, chapter.end_page, max_len)
+        if txt and #txt > 0 then return txt end
+    end
+
+    -- Reflowable document: extract bounded range between XPointers
+    if ui.document.getTextFromXPointers and chapter.xpointer then
+        local end_xp = next_chapter and next_chapter.xpointer
+        if not end_xp and ui.document.getEndXPointer then
+            end_xp = ui.document:getEndXPointer()
+        end
+        if end_xp then
+            local txt = ui.document:getTextFromXPointers(chapter.xpointer, end_xp)
+            if txt and #txt > 0 then
+                if #txt > max_len then return utf8_sub(txt, 1, max_len) end
+                return txt
+            end
+        end
+    end
+
+    -- Fallback to page range
+    if chapter.page then
+        local end_page = chapter.end_page or (next_chapter and next_chapter.page and (next_chapter.page - 1))
+        if not end_page or end_page < chapter.page then end_page = chapter.page + 30 end
+        local txt = self:getTextFromPageRange(ui, chapter.page, end_page, max_len)
+        if txt and #txt > 0 then return txt end
+    end
+
+    -- Last resort XPointer fallback
+    if ui.document.getTextFromXPointer and chapter.xpointer then
+        local txt = ui.document:getTextFromXPointer(chapter.xpointer) or ""
+        if #txt > max_len then return utf8_sub(txt, 1, max_len) end
+        return txt
+    end
+
+    return ""
 end
 
 -- Get detailed samples (Start/Mid/End) from each chapter
@@ -882,8 +1030,20 @@ function ChapterAnalyzer:getDetailedChapterSamples(ui, max_chapters, total_limit
                 if is_current_chapter then
                     local end_page = self:getEndPageForCurrentPage(ui, current_page)
                     return self:getTextFromPageRange(ui, chapter.page, end_page, total_limit)
+                elseif ui.document.getTextFromXPointers and chapter.xpointer then
+                    -- Bounded chapter extraction (#150: prevent multi-chapter DocFragment leaks)
+                    local next_ch = toc[chapter.toc_index + 1]
+                    local end_xp = next_ch and next_ch.xpointer
+                    if not end_xp and ui.document.getEndXPointer then
+                        end_xp = ui.document:getEndXPointer()
+                    end
+                    if end_xp then
+                        local txt = ui.document:getTextFromXPointers(chapter.xpointer, end_xp)
+                        if txt and #txt > 0 then return txt end
+                    end
+                    return (ui.document.getTextFromXPointer and ui.document:getTextFromXPointer(chapter.xpointer)) or ""
                 elseif ui.document.getTextFromXPointer and chapter.xpointer then
-                    -- EPUB: Usually returns the full text of the chapter file
+                    -- EPUB fallback
                     return ui.document:getTextFromXPointer(chapter.xpointer)
                 end
                 return ""
@@ -1423,9 +1583,9 @@ function ChapterAnalyzer:scanMentionsAsync(ui, entity, toc, min_page, max_page, 
                     coroutine.yield()
                 end)
                 
-                -- Filter out mentions that pass max_page or are before min_page
+                -- Filter out mentions that pass max_page or are before min_page (#150: strict boundary without overscan)
                 for _, m in ipairs(chapter_mentions) do
-                    if not (max_page and m.page and m.page > (max_page + 5)) and not (min_page and m.page and m.page <= min_page) then
+                    if not (max_page and m.page and m.page > max_page) and not (min_page and m.page and m.page <= min_page) then
                         table.insert(mentions, m)
                     end
                 end

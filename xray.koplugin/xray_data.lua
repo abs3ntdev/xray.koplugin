@@ -36,15 +36,91 @@ function M:sortDataByFrequency(list, text, key)
     if not list or #list == 0 then return list end
 
     local function getRoleScore(role)
-        if not role then return 0 end
+        if not role or type(role) ~= "string" then return 0 end
         local r = role:lower()
-        if r:find("protagonist") then return 100 end
-        if r:find("main") or r:find("lead") or r:find("hero") or r:find("detective") or r:find("investigator") then return 90 end
-        if r:find("deuteragonist") or r:find("partner") then return 80 end
-        if r:find("major") or r:find("antagonist") or r:find("villain") or r:find("primary") then return 70 end
-        if r:find("secondary") or r:find("supporting") then return 30 end
-        if r:find("minor") or r:find("background") then return 5 end
-        return 15 -- Default for other specific roles
+
+        if r:find("protagonist") or r:find("main character") or r:find("lead character") or r:find("hero") then
+            return 100
+        end
+        if r:find("private investigator") or r:find("lead investigator") or r:find("chief investigator") then
+            return 100
+        end
+        if r:find("deuteragonist") or r:find("co%-lead") or r:find("second lead") then
+            return 95
+        end
+        if r:find("detective") then
+            return 90
+        end
+        if r:find("investigat") then
+            if r:find("military") or r:find("insurance") or r:find("forensic") then
+                return 45
+            end
+            return 90
+        end
+
+        if r:find("partner") then
+            local is_personal = r:find("romantic") or r:find("ex%-") or r:find("ex ") or r:find("domestic")
+                or r:find("life") or r:find("dating") or r:find("spouse") or r:find("husband")
+                or r:find("wife") or r:find("girlfriend") or r:find("boyfriend") or r:find("'s partner")
+            if is_personal then
+                return 25
+            else
+                return 85
+            end
+        end
+
+        if r:find("primary antagonist") or r:find("main antagonist") or r:find("arch%-villain") then
+            return 80
+        end
+        if r:find("antagonist") or r:find("villain") or r:find("killer") or r:find("murderer") or r:find("culprit") then
+            return 70
+        end
+        if r:find("victim") or r:find("client") then
+            return 40
+        end
+        if r:find("suspect") or r:find("person of interest") then
+            return 35
+        end
+        if r:find("secondary") or r:find("supporting") or r:find("informant") or r:find("fiance") or r:find("friend") or r:find("mother") or r:find("father") or r:find("brother") or r:find("sister") then
+            return 30
+        end
+        if r:find("minor") or r:find("background") or r:find("incidental") or r:find("extra") then
+            return 5
+        end
+
+        return 20
+    end
+
+    local function getEntityRole(entity)
+        if not entity then return nil end
+        if entity.role and entity.role ~= "" then return entity.role end
+        if entity.states and #entity.states > 0 then
+            for i = #entity.states, 1, -1 do
+                local s = entity.states[i]
+                if s and s.role and s.role ~= "" then return s.role end
+            end
+        end
+        return entity.category or entity.occupation
+    end
+
+    local function getChapterCount(entity)
+        if not entity then return 0 end
+        local chapters = {}
+        if entity.states and type(entity.states) == "table" then
+            for _, s in ipairs(entity.states) do
+                local ch = s.chapter_index or s.chapter_title or s.page_hint
+                if ch then chapters[ch] = true end
+            end
+        end
+        if entity.history and type(entity.history) == "table" then
+            for _, h in ipairs(entity.history) do
+                local ch = h.chapter_index or h.chapter or h.page
+                if ch then chapters[ch] = true end
+            end
+        end
+        local count = 0
+        for _ in pairs(chapters) do count = count + 1 end
+        return count
     end
 
     local lower_text = text and string.lower(text) or ""
@@ -55,7 +131,7 @@ function M:sortDataByFrequency(list, text, key)
             local lower_name = string.lower(name):gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
 
             -- Signal 1: Role weight
-            local role_score = getRoleScore(item.role)
+            local role_score = getRoleScore(getEntityRole(item))
 
             -- Signal 2: Frequency in text (normalized by name length to prevent
             -- short first-name references inflating minor character scores)
@@ -101,10 +177,13 @@ function M:sortDataByFrequency(list, text, key)
                 freq = math.max(freq, mentions_count * 10)
             end
 
+            -- Signal 3: Chapter count presence
+            local ch_count = getChapterCount(item)
+
             -- Prior-only characters check:
-            -- If an item is a prior series character and appears in the current book (freq > 0 or count > 0 or has mentions),
+            -- If an item is a prior series character and appears in the current book (freq > 0 or count > 0 or ch_count > 0 or has mentions),
             -- promote it to an active series character so it ranks with the current cast.
-            if item.source == "series_prior" and (freq > 0 or (count and count > 0) or (item.history and #item.history > 1)) then
+            if item.source == "series_prior" and (freq > 0 or (count and count > 0) or ch_count > 0 or mentions_count > 0) then
                 item.is_series = true
                 item.from_series = true
                 item.source = nil
@@ -115,7 +194,11 @@ function M:sortDataByFrequency(list, text, key)
                 -- Assign negative score so they sort to the very bottom
                 item._sort_score = -10000 + (item.source_book or 1) * 100 + role_score
             else
-                item._sort_score = role_score * 1000 + freq
+                if freq > 0 then
+                    item._sort_score = freq * 100 + role_score * 10 + ch_count * 20
+                else
+                    item._sort_score = role_score * 10 + ch_count * 20
+                end
             end
         else
             item._sort_score = 0

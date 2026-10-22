@@ -282,14 +282,14 @@ describe("xray_chapteranalyzer", function()
             assert.are.equal("Chapter 1", titles[1])
             assert.are.equal("Chapter 2", titles[2])
 
-            -- Chapter 1 is fully read, so it should fetch using getTextFromXPointer
-            assert.are.equal(1, #getTextFromXPointer_calls)
-            assert.are.equal("xp_ch1", getTextFromXPointer_calls[1])
+            -- Chapter 1 is an earlier chapter, so per #150 it should fetch bounded to the next chapter with getTextFromXPointers (xp_ch1 to xp_ch2)
+            assert.are.equal(2, #getTextFromXPointers_calls)
+            assert.are.equal("xp_ch1", getTextFromXPointers_calls[1].start_xp)
+            assert.are.equal("xp_ch2", getTextFromXPointers_calls[1].end_xp)
 
             -- Chapter 2 is the current chapter, so it should fetch using getTextFromXPointers (page 20 to 26 to include current page)
-            assert.are.equal(1, #getTextFromXPointers_calls)
-            assert.are.equal("xp_page_20", getTextFromXPointers_calls[1].start_xp)
-            assert.are.equal("xp_page_26", getTextFromXPointers_calls[1].end_xp)
+            assert.are.equal("xp_page_20", getTextFromXPointers_calls[2].start_xp)
+            assert.are.equal("xp_page_26", getTextFromXPointers_calls[2].end_xp)
         end)
 
         it("spoiler-free mode does not sample beyond the current PDF page", function()
@@ -483,6 +483,162 @@ describe("xray_chapteranalyzer", function()
             local entity = { name = "Peter", role = "Protagonist" }
             local mentions = analyzer:findMentionsInChapter(mockUi("en"), entity, toc_entry, next_entry)
             assert.are.equal(1, #mentions)
+        end)
+    end)
+
+    describe("getAnnotationsForAnalysis", function()
+        it("resolves reflowable (EPUB) annotations with XPointer strings via getPageFromXPointer without crashing", function()
+            local ui = {
+                annotation = {
+                    annotations = {
+                        {
+                            page = "/body[1]/DocFragment[2]/body[1]/div[1]/p[5]/text()[1].10",
+                            text = "First highlight in chapter 1",
+                        },
+                        {
+                            page = "/body[1]/DocFragment[5]/body[1]/div[1]/p[12]/text()[1].50",
+                            text = "Second highlight in chapter 2",
+                            note = "Important clue",
+                        },
+                        {
+                            page = "/body[1]/DocFragment[14]/body[1]/div[1]/p[29]/text()[1].313",
+                            text = "Future spoiler highlight in chapter 5",
+                        },
+                    }
+                },
+                document = {
+                    getPageFromXPointer = function(self, xp)
+                        if xp:find("DocFragment%[2%]") then return 5 end
+                        if xp:find("DocFragment%[5%]") then return 12 end
+                        if xp:find("DocFragment%[14%]") then return 45 end
+                        return nil
+                    end
+                }
+            }
+
+            -- Current reading page is 15 (should include pages 5 and 12, exclude page 45)
+            local result = analyzer:getAnnotationsForAnalysis(ui, 15)
+            assert.is_not_nil(result)
+            assert.is_true(result:find("Highlight: First highlight in chapter 1") ~= nil)
+            assert.is_true(result:find("Highlight: Second highlight in chapter 2") ~= nil)
+            assert.is_true(result:find("Note: Important clue") ~= nil)
+            assert.is_nil(result:find("Future spoiler highlight"))
+        end)
+
+        it("prefers live getPageFromXPointer over stale annot.pageno after document re-layout", function()
+            local ui = {
+                annotation = {
+                    annotations = {
+                        {
+                            page = "/body[1]/DocFragment[3]/p[1]",
+                            pageno = 10, -- stale pageno from before font size increase
+                            text = "Moved highlight",
+                        }
+                    }
+                },
+                document = {
+                    getPageFromXPointer = function(self, xp)
+                        return 25 -- live page in new layout
+                    end
+                }
+            }
+
+            -- If max_page is 15, stale pageno (10) would have passed, but live page (25) correctly filters it out
+            local result_filtered = analyzer:getAnnotationsForAnalysis(ui, 15)
+            assert.is_nil(result_filtered)
+
+            -- If max_page is 30, it is included
+            local result_included = analyzer:getAnnotationsForAnalysis(ui, 30)
+            assert.is_not_nil(result_included)
+            assert.is_true(result_included:find("Highlight: Moved highlight") ~= nil)
+        end)
+
+        it("falls back to annot.pageno when getPageFromXPointer is not available", function()
+            local ui = {
+                annotation = {
+                    annotations = {
+                        {
+                            page = "/body[1]/DocFragment[1]/p[1]",
+                            pageno = 8,
+                            text = "Fallback highlight",
+                        },
+                        {
+                            page = "/body[1]/DocFragment[4]/p[2]",
+                            pageno = 35,
+                            text = "Future fallback highlight",
+                        }
+                    }
+                },
+                document = {}
+            }
+
+            local result = analyzer:getAnnotationsForAnalysis(ui, 20)
+            assert.is_not_nil(result)
+            assert.is_true(result:find("Highlight: Fallback highlight") ~= nil)
+            assert.is_nil(result:find("Future fallback highlight"))
+        end)
+
+        it("does not crash when an XPointer string cannot be resolved to a numeric page", function()
+            local ui = {
+                annotation = {
+                    annotations = {
+                        {
+                            page = "/body[1]/DocFragment[14]/body[1]/div[1]/p[29]/text()[1].313",
+                            text = "Unresolvable highlight",
+                        }
+                    }
+                },
+                document = {}
+            }
+
+            local ok, result = pcall(function()
+                return analyzer:getAnnotationsForAnalysis(ui, 20)
+            end)
+            assert.is_true(ok)
+        end)
+
+        it("handles page-based (PDF) annotations with numeric page and pos0 table", function()
+            local ui = {
+                annotation = {
+                    annotations = {
+                        {
+                            page = 4,
+                            text = "PDF highlight page 4",
+                        },
+                        {
+                            pos0 = { page = 10, x = 100, y = 200 },
+                            note = "PDF note page 10",
+                        },
+                        {
+                            page = 50,
+                            text = "PDF spoiler page 50",
+                        }
+                    }
+                }
+            }
+
+            local result = analyzer:getAnnotationsForAnalysis(ui, 15)
+            assert.is_not_nil(result)
+            assert.is_true(result:find("Highlight: PDF highlight page 4") ~= nil)
+            assert.is_true(result:find("Note: PDF note page 10") ~= nil)
+            assert.is_nil(result:find("PDF spoiler page 50"))
+        end)
+
+        it("resolves current page via ui:getCurrentPage if max_page is not provided", function()
+            local ui = {
+                getCurrentPage = function() return 10 end,
+                annotation = {
+                    annotations = {
+                        { page = 5, text = "Page 5 highlight" },
+                        { page = 20, text = "Page 20 highlight" },
+                    }
+                }
+            }
+
+            local result = analyzer:getAnnotationsForAnalysis(ui)
+            assert.is_not_nil(result)
+            assert.is_true(result:find("Page 5 highlight") ~= nil)
+            assert.is_nil(result:find("Page 20 highlight"))
         end)
     end)
 end)

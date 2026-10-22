@@ -375,12 +375,12 @@ describe("xray_seriesmanager", function()
             local series_info = { name = "Mistborn", index = 2, slug = "mistborn" }
             plugin:mergeSeriesContext(cache_data, series_info)
 
-            -- Verify existing character is prepended with [From Book N]
+            -- Verify existing character has current book description first, followed by [From Book N]
             assert.are.equal(2, #plugin.characters)
             local vin = plugin.characters[1]
             assert.are.equal("Vin", vin.name)
-            assert.truthy(vin.description:find("^%[From Book 1%] Survivor's apprentice"))
-            assert.truthy(vin.description:find("Street urchin$"))
+            assert.truthy(vin.description:find("^Street urchin"))
+            assert.truthy(vin.description:find("%[From Book 1%] Survivor's apprentice$"))
 
             -- Verify new character is inserted with source = series_prior
             local kelsier = plugin.characters[2]
@@ -391,7 +391,8 @@ describe("xray_seriesmanager", function()
             -- Verify locations merging
             assert.are.equal(2, #plugin.locations)
             local luthadel = plugin.locations[1]
-            assert.truthy(luthadel.description:find("^%[From Book 1%] Capital of Final Empire"))
+            assert.truthy(luthadel.description:find("^Current city details"))
+            assert.truthy(luthadel.description:find("%[From Book 1%] Capital of Final Empire$"))
             local hathsin = plugin.locations[2]
             assert.are.equal("Hathsin", hathsin.name)
             assert.are.equal("series_prior", hathsin.source)
@@ -399,7 +400,8 @@ describe("xray_seriesmanager", function()
             -- Verify terms merging
             assert.are.equal(2, #plugin.terms)
             local allomancy = plugin.terms[1]
-            assert.truthy(allomancy.definition:find("^%[From Book 1%] Metal burning art"))
+            assert.truthy(allomancy.definition:find("^Current definition"))
+            assert.truthy(allomancy.definition:find("%[From Book 1%] Metal burning art$"))
             local feruchemy = plugin.terms[2]
             assert.are.equal("Feruchemy", feruchemy.name)
             assert.are.equal("series_prior", feruchemy.source)
@@ -1423,6 +1425,211 @@ return {
             assert.are.equal("Fool Moon", cache.books[2].title)
             assert.is_nil(cache.books[3])
             assert.is_false(merged)
+        end)
+    end)
+
+    describe("reorderSeriesDescription", function()
+        it("leaves descriptions without series tags untouched", function()
+            local desc = "A rugged private investigator running an agency on Denmark Street."
+            assert.are.equal(desc, SeriesManager.reorderSeriesDescription(desc))
+        end)
+
+        it("places current book description first, followed by prior series descriptions in ascending order", function()
+            local legacy_merged = "[From Book 2] Solves the Quine murder.\n\n[From Book 1] War veteran starting an agency.\n\nA rugged private investigator running Denmark Street agency."
+            local reordered = SeriesManager.reorderSeriesDescription(legacy_merged)
+            local expected = "A rugged private investigator running Denmark Street agency.\n\n[From Book 1] War veteran starting an agency.\n\n[From Book 2] Solves the Quine murder."
+            assert.are.equal(expected, reordered)
+        end)
+
+        it("handles entities present only in prior books correctly", function()
+            local prior_only = "[From Book 1] Minor informant who died in the first case."
+            assert.are.equal(prior_only, SeriesManager.reorderSeriesDescription(prior_only))
+        end)
+    end)
+
+    describe("fractional series index and roster handling", function()
+        it("hasBookEntities identifies populated vs stub books", function()
+            assert.is_false(SeriesManager.hasBookEntities(nil))
+            assert.is_false(SeriesManager.hasBookEntities({}))
+            assert.is_false(SeriesManager.hasBookEntities({ characters = {}, locations = {}, terms = {}, timeline = {} }))
+            assert.is_true(SeriesManager.hasBookEntities({ characters = { { name = "Kaladin" } } }))
+            assert.is_true(SeriesManager.hasBookEntities({ locations = { { name = "Roshar" } } }))
+            assert.is_true(SeriesManager.hasBookEntities({ terms = { { name = "Spren" } } }))
+            assert.is_true(SeriesManager.hasBookEntities({ timeline = { { chapter = "Ch 1", event = "Battle" } } }))
+        end)
+
+        it("getCandidateSidecarDirs finds proper sidecar paths", function()
+            local dirs = manager:getCandidateSidecarDirs("/books/Dawnshard.epub")
+            local found = false
+            for _, d in ipairs(dirs) do
+                if d == "/books/Dawnshard.epub.sdr" then found = true end
+            end
+            assert.is_true(found)
+
+            -- If path already ends in .sdr, it should still include candidate sidecar
+            local sdr_dirs = manager:getCandidateSidecarDirs("/books/Dawnshard.epub.sdr")
+            local found_sdr = false
+            for _, d in ipairs(sdr_dirs) do
+                if d == "/books/Dawnshard.epub.sdr" then found_sdr = true end
+            end
+            assert.is_true(found_sdr)
+        end)
+
+        it("syncBookToSeriesCache stores roster stub without overwriting existing entities", function()
+            local slug = "the_stormlight_archive"
+            -- First sync existing real book
+            manager:syncBookToSeriesCache(slug, 2.5, {
+                title = "Edgedancer",
+                characters = { { name = "Lift" } },
+                timeline = {}
+            }, "/books/Edgedancer.epub", "local_xray")
+
+            local cache1 = manager:loadSeriesCache(slug)
+            assert.are.equal("Edgedancer", cache1.books[2.5].title)
+            assert.are.equal("local_xray", cache1.books[2.5].source)
+            assert.are.equal(1, #cache1.books[2.5].characters)
+
+            -- Sync empty roster stub for 2.5 (should preserve existing characters)
+            manager:syncBookToSeriesCache(slug, 2.5, {
+                title = "Edgedancer",
+                characters = {},
+                timeline = {}
+            }, "/books/Edgedancer.epub", "roster")
+
+            local cache2 = manager:loadSeriesCache(slug)
+            assert.are.equal(1, #cache2.books[2.5].characters)
+            assert.are.equal("local_xray", cache2.books[2.5].source)
+
+            -- Sync brand new roster stub for 3.5 (Dawnshard)
+            manager:syncBookToSeriesCache(slug, 3.5, {
+                title = "Dawnshard",
+                characters = {},
+                timeline = {}
+            }, "/books/Dawnshard.epub", "roster")
+
+            local cache3 = manager:loadSeriesCache(slug)
+            assert.are.equal("Dawnshard", cache3.books[3.5].title)
+            assert.are.equal("roster", cache3.books[3.5].source)
+            assert.is_false(SeriesManager.hasBookEntities(cache3.books[3.5]))
+        end)
+
+        it("getPriorBookList returns all 5 prior books including 2.5 and 3.5 when reading Book 4", function()
+            local slug = "the_stormlight_archive"
+            local series_cache = {
+                series_slug = slug,
+                books = {
+                    [1] = { title = "The Way of Kings", source = "local_xray", characters = { { name = "Kaladin" } } },
+                    [2] = { title = "Words of Radiance", source = "local_xray", characters = { { name = "Shallan" } } },
+                    [2.5] = { title = "Edgedancer", source = "local_xray", characters = { { name = "Lift" } } },
+                    [3] = { title = "Oathbringer", source = "local_xray", characters = { { name = "Dalinar" } } },
+                    [3.5] = { title = "Dawnshard", source = "roster", characters = {} },
+                    [4] = { title = "Rhythm of War", source = "roster", characters = {} },
+                }
+            }
+            manager:saveSeriesCache(slug, series_cache)
+
+            local series_info = { name = "The Stormlight Archive", index = 4, slug = slug }
+            local captured_context
+            local mock_ai_helper = {
+                createPrompt = function(_, title, author, context, section)
+                    captured_context = context
+                    return { section = section }
+                end,
+                executeUnifiedRequest = function()
+                    return { prior_books = {} }
+                end
+            }
+
+            local priors = manager:getPriorBookList(series_info, "Brandon Sanderson", mock_ai_helper, "/books/Rhythm_of_War.epub")
+            assert.are.equal(5, #priors)
+            assert.are.equal(1, priors[1].index)
+            assert.are.equal(2, priors[2].index)
+            assert.are.equal(2.5, priors[3].index)
+            assert.are.equal(3, priors[4].index)
+            assert.are.equal(3.5, priors[5].index)
+            assert.is_true(captured_context.has_fractional)
+        end)
+
+        it("fetchSeriesContext detects roster stub Book 3.5 as MISS and fetches it via AI", function()
+            local original_network = package.loaded["ui/network/manager"]
+            package.loaded["ui/network/manager"] = {
+                isOnline = function() return true end,
+                runWhenOnline = function(_, fn) fn() end,
+            }
+
+            local slug = "the_stormlight_archive"
+            local initial_cache = {
+                series_slug = slug,
+                books = {
+                    [1] = { title = "The Way of Kings", source = "llm_summary", characters = { { name = "Kaladin" } } },
+                    [2] = { title = "Words of Radiance", source = "llm_summary", characters = { { name = "Shallan" } } },
+                    [2.5] = { title = "Edgedancer", source = "local_xray", characters = { { name = "Lift" } } },
+                    [3] = { title = "Oathbringer", source = "llm_summary", characters = { { name = "Dalinar" } } },
+                    [3.5] = { title = "Dawnshard", source = "roster", characters = {} },
+                    [4] = { title = "Rhythm of War", source = "roster", characters = {} },
+                }
+            }
+            manager:saveSeriesCache(slug, initial_cache)
+
+            local plugin = createMockPlugin()
+            for k, v in pairs(xray_fetch) do
+                plugin[k] = v
+            end
+            plugin.series_manager = manager
+            plugin.cache_manager = {
+                saveCache = function() return true end,
+                asyncSaveCache = function() return true end,
+                loadCache = function() return {} end
+            }
+            plugin.ui.document.getProps = function()
+                return { title = "Rhythm of War", authors = "Brandon Sanderson", series = "The Stormlight Archive", series_index = 4 }
+            end
+
+            local merged = false
+            local merged_cache = nil
+            plugin.mergeSeriesContext = function(_, cache_data)
+                merged = true
+                merged_cache = cache_data
+            end
+
+            local fetched_titles = {}
+            plugin.ai_helper = {
+                settings = { series_context_enabled = true },
+                setTrapWidget = function() end,
+                resetTrapWidget = function() end,
+                createPrompt = function(_, title, _, context, section)
+                    return { section = section, title = title, context = context }
+                end,
+                executeUnifiedRequest = function(_, prompt)
+                    if prompt.section == "prior_book_list" then
+                        return { prior_books = {} }
+                    end
+                    if prompt.section == "series_book_summary" then
+                        table.insert(fetched_titles, prompt.title)
+                        return {
+                            characters = { { name = "Rysn" } },
+                            locations = { { name = "Akinah" } },
+                            terms = { { name = "Dawnshard" } },
+                            timeline = { { chapter = "Ch 1", event = "Voyage begins" } }
+                        }
+                    end
+                    return {}
+                end
+            }
+
+            plugin:fetchSeriesContext(true)
+
+            -- Should only fetch Book 3.5 (Dawnshard), because books 1, 2, 2.5, 3 already had entities
+            assert.are.equal(1, #fetched_titles)
+            assert.are.equal("Dawnshard", fetched_titles[1])
+            assert.is_true(merged)
+            assert.is_not_nil(merged_cache)
+            assert.is_not_nil(merged_cache.books[3.5])
+            assert.are.equal("llm_summary", merged_cache.books[3.5].source)
+            assert.are.equal(1, #merged_cache.books[3.5].characters)
+            assert.are.equal("Rysn", merged_cache.books[3.5].characters[1].name)
+
+            package.loaded["ui/network/manager"] = original_network
         end)
     end)
 end)

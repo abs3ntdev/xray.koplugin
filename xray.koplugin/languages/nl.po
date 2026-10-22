@@ -237,6 +237,10 @@ msgstr "Weet u zeker dat u alle geconfigureerde API-sleutels en aangepaste endpo
 msgid "confirm_clear_single_key"
 msgstr "De geconfigureerde API-sleutel voor %s wissen?"
 
+# en-hash: d3d2e617335f08df83599665eef8a418
+msgid "continue_in_background"
+msgstr "Sluiten"
+
 # en-hash: 9cfefed8fb9497baa5cd519d7d2bb5d7
 msgid "current_language"
 msgstr "nl"
@@ -469,6 +473,22 @@ msgstr "Er is een onverwachte fout opgetreden: %s"
 msgid "error_unknown_title"
 msgstr "Ophalen mislukt"
 
+# en-hash: b9f5c797ebbf55adccdd8539a65a0241
+msgid "evolution_disabled"
+msgstr "Uitgeschakeld"
+
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "evolution_enabled"
+msgstr "Ingeschakeld"
+
+# en-hash: a60a71af2508ebb8958b115204d602f8
+msgid "evolution_setting_desc"
+msgstr "Entiteit-evolutie volgt hoe personages, locaties en termen evolueren door hoofdstukken en mijlpalen heen.\n\nDoor dit uit te schakelen, wordt de Evolutie-knop verborgen in zoek-pop-ups en detailvensters."
+
+# en-hash: 8a193135a3bc4b4998dfc09f31602b3f
+msgid "evolution_title"
+msgstr "Evolutie"
+
 # en-hash: bd109e1437d54acaada2eb31eebd39d2
 msgid "extracting_more_characters"
 msgstr "Extra personages extraheren..."
@@ -520,6 +540,30 @@ msgstr "Volledig boek modus"
 # en-hash: 224900ca5b99a949b6fe8a5c0360f5ff
 msgid "gemini_key_hint"
 msgstr "Voer uw gratis Gemini-sleutel van Google AI Studio in (begint met AQ. of AIzaSy...):"
+
+# en-hash: e743adccf6972021e1bbf252702394d8
+msgid "highlight_menu_btn"
+msgstr "Markeringsmenu"
+
+# en-hash: f850d33c4743163bf7e06b8fde0855a6
+msgid "horizon_1"
+msgstr "1 hoofdstuk vooruit"
+
+# en-hash: b93160631e7a4c86e26e599b133cf5ef
+msgid "horizon_2"
+msgstr "2 hoofdstukken vooruit"
+
+# en-hash: aef4a7c7b9ebcb82dca9ac6a8ebb0ba1
+msgid "horizon_3"
+msgstr "3 hoofdstukken vooruit"
+
+# en-hash: 08b431a0304ccf08e5e44cd9c5ef91b5
+msgid "horizon_5"
+msgstr "5 hoofdstukken vooruit"
+
+# en-hash: 0ebfde96e47052f9ce95f781fada228a
+msgid "horizon_off"
+msgstr "Uit (alleen huidig hoofdstuk)"
 
 # en-hash: 33dca68e340b8d6c21472341130cf45a
 msgid "illustration"
@@ -917,6 +961,10 @@ msgstr "Voer aangepast model in..."
 msgid "menu_entity_ui_mode"
 msgstr "Stijl entiteitsbeschrijving"
 
+# en-hash: 54c388986a89f527cc5cbdcde63a7c61
+msgid "menu_evolution_settings"
+msgstr "Evolutie-instellingen"
+
 # en-hash: c1b19dc83bcbcf0c634af5164ac2f24f
 msgid "menu_fetch_author"
 msgstr "Auteursinformatie ophalen (AI)"
@@ -984,6 +1032,14 @@ msgstr "%s-sleutel plakken van klembord"
 # en-hash: f3ab2ad220b458e8cd144bc464038505
 msgid "menu_popup_font_size"
 msgstr "Lettergrootte pop-up"
+
+# en-hash: 48a3995863adcc59ade43533a3a4f7ff
+msgid "menu_prefetch_horizon"
+msgstr "Vooruitblik (voor offline lezen)"
+
+# en-hash: 523ae7a3cffca13a26ef27ca7f45b5a3
+msgid "menu_pregenerate_book"
+msgstr "Hele boek vooraf genereren"
 
 # en-hash: f0e87a49b3cb82e4faabd5fc3729e8e8
 msgid "menu_primary_ai_model"
@@ -1169,6 +1225,10 @@ msgstr "AI API-sleutel niet ingesteld!\n\nVoer API-sleutel in via:\nMenu → X-R
 msgid "no_author_data_fetch"
 msgstr "Geen auteursinformatie beschikbaar.\n\nWilt u deze ophalen via AI?"
 
+# en-hash: 1f291814f41100bf065758282bfb1f3e
+msgid "no_chapters_found"
+msgstr "Geen narratieve hoofdstukken gevonden."
+
 # en-hash: 18b36cd276b2c5afa9f9cdf198876b20
 msgid "no_character_data"
 msgstr "Nog geen personagegegevens.\n\nGebruik eerst 'X-Ray-gegevens ophalen'."
@@ -1176,6 +1236,10 @@ msgstr "Nog geen personagegegevens.\n\nGebruik eerst 'X-Ray-gegevens ophalen'."
 # en-hash: 80a4905228688f8ad8ec996803f60ffb
 msgid "no_data_prompt"
 msgstr "Geen X-Ray-gegevens gevonden voor dit boek. Wilt u deze nu ophalen via AI?"
+
+# en-hash: 8c918ead3a0aa5e6b949bf890bb25cb3
+msgid "no_document"
+msgstr "Geen document geopend."
 
 # en-hash: f66eabdf2cb216138e5c20cd3f9d890d
 msgid "no_duplicates_found"
@@ -1221,6 +1285,10 @@ msgstr "Nog geen termgegevens. Gebruik eerst 'Fetch X-Ray Data'."
 msgid "no_timeline_data"
 msgstr "Nog geen tijdlijngegevens.\n\nGebruik eerst 'X-Ray-gegevens ophalen'.\n\nAI zal belangrijke gebeurtenissen in\nchronologische volgorde tonen."
 
+# en-hash: 5e629935d4d1f381d41aa5df7596bdd2
+msgid "no_toc_found"
+msgstr "Geen inhoudsopgave gevonden in dit document."
+
 # en-hash: e0aa021e21dddbd6d8cecec71e9cf564
 msgid "ok"
 msgstr "OK"
@@ -1228,6 +1296,10 @@ msgstr "OK"
 # en-hash: 386b384e3eec6bf9bf55d32b5018de15
 msgid "pair_rejected"
 msgstr "Pair marked as not a duplicate."
+
+# en-hash: 98ba558bb9ff6031db51cfb88b0b7ca2
+msgid "past_evolution"
+msgstr "Verhaallijn"
 
 # en-hash: b8d4677ac13de48defd22ae1a3fe2479
 msgid "paste_clipboard_confirm"
@@ -1289,6 +1361,30 @@ msgstr "Klein"
 msgid "popup_font_size_xlarge"
 msgstr "Extra groot"
 
+# en-hash: 3a5b636cdae103a7041a4bd805a590b5
+msgid "prefetch_horizon_desc"
+msgstr "Genereer aankomende hoofdstukken op de achtergrond terwijl je online bent, zonder spoilers totdat je ze bereikt:"
+
+# en-hash: dca66de2b9060580aeee1ad0b51381ac
+msgid "pregenerate_confirm_text"
+msgstr "Dit zal alle %d hoofdstukken op de achtergrond scannen en analyseren. Nieuw ontdekte personagestatussen, locaties en begrippen blijven spoilervrij totdat je ze bereikt.\n\nDoorgaan?"
+
+# en-hash: 8474e54bad0a6acdfa4c577f3cce833b
+msgid "pregeneration_complete"
+msgstr "Pre-generatie voltooid!"
+
+# en-hash: b81790e75b057df58035bbf6a562fdd9
+msgid "pregeneration_progress"
+msgstr "X-Ray aan het voorbereiden: Hoofdstuk %d van %d..."
+
+# en-hash: ce0e3b3cdea867bfaf5f6690cc447817
+msgid "pregeneration_started"
+msgstr "Pre-generatie op de achtergrond gestart."
+
+# en-hash: 49c78fe423024d32c829cb336052531b
+msgid "pregeneration_stopped"
+msgstr "Pre-generatie gestopt."
+
 # en-hash: 14230d11143a03f4330c6433d5032a9d
 msgid "prev"
 msgstr "Vorige"
@@ -1336,6 +1432,10 @@ msgstr "Hiermee worden alle gecachte X-Ray-gegevens voor dit boek verwijderd en 
 # en-hash: 28d57012d4eada5bfcadc8447e1550ea
 msgid "rebuild_confirm_title"
 msgstr "X-Ray-gegevens opnieuw opbouwen"
+
+# en-hash: 63a6a88c066880c5ac42394a22803ca6
+msgid "refresh"
+msgstr "Vernieuwen"
 
 # en-hash: d98ac12774fca5c3cbaffe276840c55f
 msgid "reject_pair"
@@ -1465,9 +1565,17 @@ msgstr "Selecteer uw spoilervoorkeur voor X-Ray-gegevens:"
 msgid "spoiler_preference_title"
 msgstr "Spoilervoorkeur"
 
+# en-hash: a6122a65eaa676f700ae68d393054a37
+msgid "start"
+msgstr "Start"
+
 # en-hash: 11a755d598c0c417f9a36758c3da7481
 msgid "stop"
 msgstr "Stoppen"
+
+# en-hash: cb70e7496d2ead7064f09a1e145d1822
+msgid "stop_pregeneration"
+msgstr "Stop pre-generatie"
 
 # en-hash: d725036d492c380f06f4eb32f5704bc9
 msgid "term_not_found"
@@ -1933,9 +2041,17 @@ msgstr "WELKOM BIJ X-RAY"
 msgid "xray_disabled_label"
 msgstr "Uitgeschakeld"
 
-# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
-msgid "xray_enabled_label"
-msgstr "Ingeschakeld"
+# en-hash: f985e0d7d99a942354d25b3ca82e2dbd
+msgid "xray_mode_about"
+msgstr "Beheert hoe X-Ray integreert met tekstselectie tijdens het lezen:\n\n• [B]Knop in menu:[/B] Voegt een 'X-Ray'-knop toe aan de woordenboek- en markeringsmenu's van KOReader.\n• [B]Automatische pop-up bij markering:[/B] Opent direct X-Ray bij selectie van een woord of naam met X-Ray-gegevens, waarbij het markeringsmenu wordt overgeslagen. Als er geen gegevens zijn, verschijnt het normale menu. Gebruik de 'Markeringsmenu'-knop in de pop-up om alsnog te markeren of op te zoeken in het woordenboek.\n• [B]Uitgeschakeld:[/B] Verbergt de X-Ray-zoekknoppen in de tekst."
+
+# en-hash: 9c80703132b544548dbcfcf70e216f38
+msgid "xray_mode_auto_popup_label"
+msgstr "Automatische pop-up bij markering"
+
+# en-hash: eeb0673b42314cc5bb1f98be372c9eda
+msgid "xray_mode_button_label"
+msgstr "Knop in menu (Standaard)"
 
 # en-hash: aa3045baed0aad489f96655b14b671ac
 msgid "xray_mode_desc"
@@ -1945,7 +2061,11 @@ msgstr "Voegt een 'X-Ray'-knop toe aan woordenboek- en selectiemenu's voor direc
 msgid "yes"
 msgstr "Ja"
 
+
 # en-hash: d1591eafbd0b70a04df7b81673b81bfc
 msgid "menu_update_history"
 msgstr "Updategeschiedenis"
 
+# en-hash: 00d23a76e43b46dae9ec7aa9dcbebb32
+msgid "xray_enabled_label"
+msgstr "Ingeschakeld"

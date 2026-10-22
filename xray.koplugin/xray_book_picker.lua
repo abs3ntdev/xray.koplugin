@@ -446,7 +446,7 @@ function M.show(options)
 
         local close_btn = createCustomBtn{
             icon = "x.svg",
-            icon_size = sc(16),
+            icon_size = sc(22),
             is_focused = is_focused_close,
             width = close_btn_w,
             height = header_h,

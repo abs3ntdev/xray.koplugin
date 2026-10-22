@@ -268,7 +268,16 @@ end
 function M:buildMentionsMenuItems(entity)
     local items = {}
     local name = entity.name or "???"
-    local mentions = entity.mentions or {}
+    local raw_mentions = entity.mentions or {}
+    local is_spoiler_free = (self.ai_helper and self.ai_helper.settings and self.ai_helper.settings.spoiler_setting or "spoiler_free") == "spoiler_free"
+    local cur_page = _getCurrentPage(self)
+    local mentions = {}
+    for _, m in ipairs(raw_mentions) do
+        local p = tonumber(m.page)
+        if not is_spoiler_free or not cur_page or not p or p <= cur_page then
+            table.insert(mentions, m)
+        end
+    end
     local is_scanning = self.active_mention_scan and self.active_mention_scan.entity_name == name
     
     if is_scanning then

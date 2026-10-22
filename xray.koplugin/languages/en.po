@@ -179,6 +179,9 @@ msgstr "Are you sure you want to clear all configured API keys and custom endpoi
 msgid "confirm_clear_single_key"
 msgstr "Clear the configured API key for %s?"
 
+msgid "continue_in_background"
+msgstr "Close"
+
 msgid "current_language"
 msgstr "en"
 
@@ -353,6 +356,18 @@ msgstr "An unexpected error occurred: %s"
 msgid "error_unknown_title"
 msgstr "Fetch Failed"
 
+msgid "evolution_disabled"
+msgstr "Disabled"
+
+msgid "evolution_enabled"
+msgstr "Enabled"
+
+msgid "evolution_setting_desc"
+msgstr "Story Arc tracks how characters, locations, and terms evolve across chapters and milestones.\n\nDisabling this will hide the Story Arc button from lookup popups and detail dialogs."
+
+msgid "evolution_title"
+msgstr "Story Arc: %s"
+
 msgid "extracting_more_characters"
 msgstr "Extracting additional characters..."
 
@@ -391,6 +406,24 @@ msgstr "Full Book Mode"
 
 msgid "gemini_key_hint"
 msgstr "Enter your free Gemini key from Google AI Studio (starts with AQ. or AIzaSy...):"
+
+msgid "highlight_menu_btn"
+msgstr "Highlight Menu"
+
+msgid "horizon_1"
+msgstr "1 Chapter Ahead"
+
+msgid "horizon_2"
+msgstr "2 Chapters Ahead"
+
+msgid "horizon_3"
+msgstr "3 Chapters Ahead"
+
+msgid "horizon_5"
+msgstr "5 Chapters Ahead"
+
+msgid "horizon_off"
+msgstr "Off (Current Only)"
 
 msgid "illustration"
 msgstr "Illustration"
@@ -689,6 +722,9 @@ msgstr "Enter custom model..."
 msgid "menu_entity_ui_mode"
 msgstr "Entity Description Style"
 
+msgid "menu_evolution_settings"
+msgstr "Story Arc Settings"
+
 msgid "menu_fetch_author"
 msgstr "Fetch Author Info"
 
@@ -739,6 +775,12 @@ msgstr "Paste %s Key from Clipboard"
 
 msgid "menu_popup_font_size"
 msgstr "Popup Font Size"
+
+msgid "menu_prefetch_horizon"
+msgstr "Prefetch Horizon (Offline Readers)"
+
+msgid "menu_pregenerate_book"
+msgstr "Pre-generate Entire Book"
 
 msgid "menu_primary_ai_model"
 msgstr "Primary AI Model"
@@ -878,11 +920,17 @@ msgstr "No API key set!"
 msgid "no_author_data_fetch"
 msgstr "No author biography available. Fetch now?"
 
+msgid "no_chapters_found"
+msgstr "No narrative chapters found."
+
 msgid "no_character_data"
 msgstr "No characters found."
 
 msgid "no_data_prompt"
 msgstr "No X-Ray data found for this book. Would you like to fetch it from AI now?"
+
+msgid "no_document"
+msgstr "No document open."
 
 msgid "no_duplicates_found"
 msgstr "No duplicates found."
@@ -917,11 +965,17 @@ msgstr "No terms data yet. Please use 'Fetch X-Ray Data' first."
 msgid "no_timeline_data"
 msgstr "No timeline data yet.\n\nPlease use 'Fetch X-Ray Data' first.\n\nAI will show key events in\nchronological order."
 
+msgid "no_toc_found"
+msgstr "No table of contents found in this document."
+
 msgid "ok"
 msgstr "OK"
 
 msgid "pair_rejected"
 msgstr "Pair marked as not a duplicate."
+
+msgid "past_evolution"
+msgstr "Story Arc"
 
 msgid "paste_clipboard_confirm"
 msgstr "Use the API key found in clipboard for %s?"
@@ -968,6 +1022,24 @@ msgstr "Small"
 msgid "popup_font_size_xlarge"
 msgstr "Extra Large"
 
+msgid "prefetch_horizon_desc"
+msgstr "Pre-generate upcoming chapters in the background while online, keeping descriptions spoiler-free until you reach them:"
+
+msgid "pregenerate_confirm_text"
+msgstr "This will sequentially scan and analyze all %d chapters in the background. Newly discovered character states, locations, and glossary terms will remain spoiler-free until you reach them.\n\nContinue?"
+
+msgid "pregeneration_complete"
+msgstr "Pre-generation complete!"
+
+msgid "pregeneration_progress"
+msgstr "Pre-generating X-Ray: Chapter %d of %d..."
+
+msgid "pregeneration_started"
+msgstr "Pre-generation started in background."
+
+msgid "pregeneration_stopped"
+msgstr "Pre-generation stopped."
+
 msgid "prev"
 msgstr "Prev"
 
@@ -1003,6 +1075,9 @@ msgstr "This will discard all cached X-Ray data for this book and fetch fresh da
 
 msgid "rebuild_confirm_title"
 msgstr "Rebuild X-Ray Data"
+
+msgid "refresh"
+msgstr "Refresh"
 
 msgid "reject_pair"
 msgstr "Reject"
@@ -1100,8 +1175,14 @@ msgstr "Select your spoiler preference for X-Ray data:"
 msgid "spoiler_preference_title"
 msgstr "Spoiler Settings"
 
+msgid "start"
+msgstr "Start"
+
 msgid "stop"
 msgstr "Stop"
+
+msgid "stop_pregeneration"
+msgstr "Stop Pre-generation"
 
 msgid "term_not_found"
 msgstr "Term not found."
@@ -1451,8 +1532,14 @@ msgstr "WELCOME TO X-RAY"
 msgid "xray_disabled_label"
 msgstr "Disabled"
 
-msgid "xray_enabled_label"
-msgstr "Enabled"
+msgid "xray_mode_about"
+msgstr "Controls how X-Ray integrates with text selection while reading:\n\n• [B]Button in Menu:[/B] Adds an 'X-Ray' button to KOReader's dictionary and highlight menus.\n• [B]Auto-Popup on Highlight:[/B] Immediately opens X-Ray when you select a word or name that has X-Ray data, skipping the highlight menu. If no X-Ray data matches, the regular menu is shown. Use the 'Highlight Menu' button inside the popup anytime to highlight or look up the word in the dictionary.\n• [B]Disabled:[/B] Hides in-text X-Ray lookup buttons."
+
+msgid "xray_mode_auto_popup_label"
+msgstr "Auto-Popup on Highlight"
+
+msgid "xray_mode_button_label"
+msgstr "Button in Menu (Default)"
 
 msgid "xray_mode_desc"
 msgstr "Adds an 'X-Ray' button to dictionary and selection menus for instant lookups."
@@ -1460,6 +1547,9 @@ msgstr "Adds an 'X-Ray' button to dictionary and selection menus for instant loo
 msgid "yes"
 msgstr "Yes"
 
+
 msgid "menu_update_history"
 msgstr "Update History"
 
+msgid "xray_enabled_label"
+msgstr "Enabled"
